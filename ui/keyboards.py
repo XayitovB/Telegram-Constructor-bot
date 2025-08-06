@@ -47,8 +47,7 @@ class MainKeyboards:
     def get_user_main_menu() -> ReplyKeyboardMarkup:
         """Get main menu for regular users."""
         buttons = [
-            ["👤 My Profile", "ℹ️ Information"],
-            ["📞 Contact Support", "📋 Help"]
+            ["🤖 My Bots Panel"]
         ]
         return KeyboardBuilder.create_reply_keyboard(buttons)
     
@@ -214,6 +213,73 @@ class BroadcastKeyboards:
         buttons = [
             [("👥 All Users", "target_all"), ("✅ Active Only", "target_active")],
             [("👑 Admins Only", "target_admins"), ("🎯 Custom Filter", "target_custom")]
+        ]
+        return KeyboardBuilder.create_inline_keyboard(buttons)
+
+
+class BotManagementKeyboards:
+    """Bot management keyboards for users."""
+    
+    @staticmethod
+    def get_bot_panel() -> ReplyKeyboardMarkup:
+        """Get user bot management panel."""
+        buttons = [
+            ["🤖 My Bots", "➕ Add New Bot"],
+            ["👨‍💼 Contact Admin", "📜 Bot Guidelines"],
+            ["🔙 Back to Main Menu"]
+        ]
+        return KeyboardBuilder.create_reply_keyboard(buttons)
+    
+    @staticmethod
+    def get_my_bots_menu() -> InlineKeyboardMarkup:
+        """Get my bots menu."""
+        buttons = [
+            [("✅ Active Bots", "my_bots_active"), ("⏳ Pending Bots", "my_bots_pending")],
+            [("❌ Rejected Bots", "my_bots_rejected"), ("📊 All Bots", "my_bots_all")],
+            [("🔄 Refresh", "my_bots_refresh")]
+        ]
+        return KeyboardBuilder.create_inline_keyboard(buttons)
+    
+    @staticmethod
+    def get_bot_actions(bot_id: int, status: str) -> InlineKeyboardMarkup:
+        """Get actions for specific bot."""
+        buttons = []
+        
+        if status == "pending":
+            buttons.extend([
+                [("✏️ Edit Bot", f"edit_bot_{bot_id}"), ("❌ Delete Request", f"delete_bot_{bot_id}")],
+                [("📊 View Details", f"view_bot_{bot_id}")]
+            ])
+        elif status == "approved":
+            buttons.extend([
+                [("📊 View Details", f"view_bot_{bot_id}"), ("⚙️ Bot Settings", f"bot_settings_{bot_id}")],
+                [("📈 Statistics", f"bot_stats_{bot_id}")]
+            ])
+        else:  # rejected
+            buttons.extend([
+                [("📊 View Details", f"view_bot_{bot_id}"), ("🔄 Resubmit", f"resubmit_bot_{bot_id}")],
+                [("❌ Delete", f"delete_bot_{bot_id}")]
+            ])
+        
+        buttons.append([("🔙 Back to My Bots", "my_bots_all")])
+        return KeyboardBuilder.create_inline_keyboard(buttons)
+    
+    @staticmethod
+    def get_contact_admin_menu() -> InlineKeyboardMarkup:
+        """Get contact admin menu."""
+        buttons = [
+            [("🆘 Report Issue", "contact_issue"), ("💡 Feature Request", "contact_feature")],
+            [("❓ General Question", "contact_question"), ("🤖 Bot Approval", "contact_bot_approval")],
+            [("📨 Custom Message", "contact_custom")]
+        ]
+        return KeyboardBuilder.create_inline_keyboard(buttons)
+    
+    @staticmethod
+    def get_priority_selection() -> InlineKeyboardMarkup:
+        """Get message priority selection."""
+        buttons = [
+            [("🔴 Urgent", "priority_urgent"), ("🟠 High", "priority_high")],
+            [("🟡 Normal", "priority_normal"), ("🟢 Low", "priority_low")]
         ]
         return KeyboardBuilder.create_inline_keyboard(buttons)
 

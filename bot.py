@@ -19,7 +19,8 @@ from core.database import db, User
 from core.logging import setup_logging, get_logger, log_admin_action
 from ui.keyboards import (
     get_user_keyboard, MainKeyboards, AdminKeyboards,
-    BroadcastKeyboards, NavigationKeyboards, create_user_list_keyboard
+    BroadcastKeyboards, NavigationKeyboards, BotManagementKeyboards,
+    create_user_list_keyboard
 )
 from ui.formatters import (
     MessageFormatter, DataExporter, PaginationHelper
@@ -40,6 +41,16 @@ class BroadcastStates(StatesGroup):
 
 class UserSearchStates(StatesGroup):
     waiting_for_query = State()
+
+class BotManagementStates(StatesGroup):
+    waiting_for_bot_name = State()
+    waiting_for_bot_token = State()
+    waiting_for_bot_description = State()
+    confirming_bot_submission = State()
+
+class AdminMessageStates(StatesGroup):
+    waiting_for_message = State()
+    waiting_for_priority = State()
 
 # Global data storage
 broadcast_data: Dict[int, Dict[str, Any]] = {}
@@ -88,6 +99,41 @@ class BotService:
             )
     
     @staticmethod
+    async def notify_admins_new_user(user: User) -> None:
+        """Notify all admins about new user registration."""
+        try:
+            admin_ids = settings.get_admin_ids()
+            if not admin_ids:
+                logger.warning("No admin IDs configured for new user notifications")
+                return
+            
+            # Create notification message
+            notification_text = MessageFormatter.format_new_user_notification(user)
+            
+            # Send notification to all admins
+            for admin_id in admin_ids:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        notification_text,
+                        parse_mode="Markdown"
+                    )
+                    logger.info(f"New user notification sent to admin {admin_id}")
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id} about new user: {e}")
+            
+            # Log the notification
+            await db.log_admin_action(
+                admin_id=0,  # System notification
+                action_type="new_user_notification",
+                target_user_id=user.user_id,
+                details=f"New user {user.display_name} registered"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error notifying admins about new user {user.user_id}: {e}")
+    
+    @staticmethod
     async def check_admin(user_id: int) -> bool:
         """Check if user has admin privileges."""
         user = await db.get_user(user_id)
@@ -112,8 +158,20 @@ class BotService:
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     """Handle /start command."""
+    # Check if this is a new user
+    existing_user = await db.get_user(message.from_user.id)
+    is_new_user = existing_user is None
+    
+    # Send main menu
     await BotService.send_main_menu(message)
-    logger.info(f"User {message.from_user.id} started the bot")
+    
+    # If new user, notify admins
+    if is_new_user:
+        user = await BotService.update_user(message)
+        await BotService.notify_admins_new_user(user)
+        logger.info(f"New user {message.from_user.id} started the bot - admins notified")
+    else:
+        logger.info(f"Existing user {message.from_user.id} started the bot")
 
 
 @dp.message(Command('admin'))
@@ -140,52 +198,6 @@ async def admin_command_handler(message: Message):
 
 # === BUTTON HANDLERS - USER INTERFACE ===
 
-@dp.message(F.text == "👤 My Profile")
-async def profile_button_handler(message: Message):
-    """Handle profile button."""
-    user = await BotService.update_user(message)
-    profile_text = MessageFormatter.format_user_profile(user, show_admin_info=user.is_admin)
-    
-    await message.answer(
-        profile_text,
-        reply_markup=MainKeyboards.get_back_button()
-    )
-
-
-@dp.message(F.text == "ℹ️ Information")
-async def info_button_handler(message: Message):
-    """Handle information button."""
-    user = await BotService.update_user(message)
-    info_text = MessageFormatter.format_help_message(user.is_admin)
-    
-    await message.answer(
-        info_text,
-        reply_markup=MainKeyboards.get_back_button()
-    )
-
-
-@dp.message(F.text == "📞 Contact Support")
-async def contact_button_handler(message: Message):
-    """Handle contact support button."""
-    await BotService.update_user(message)
-    contact_text = MessageFormatter.format_contact_info()
-    
-    await message.answer(
-        contact_text,
-        reply_markup=MainKeyboards.get_back_button()
-    )
-
-
-@dp.message(F.text == "📋 Help")
-async def help_button_handler(message: Message):
-    """Handle help button."""
-    user = await BotService.update_user(message)
-    help_text = MessageFormatter.format_help_message(user.is_admin)
-    
-    await message.answer(
-        help_text,
-        reply_markup=MainKeyboards.get_back_button()
-    )
 
 
 # === ADMIN BUTTON HANDLERS ===
@@ -871,6 +883,343 @@ async def users_admins_callback(callback: CallbackQuery):
     
     log_admin_action(user_id, "view_admins_callback", f"Viewed {len(admins)} administrators via callback")
 
+
+# === BOT MANAGEMENT HANDLERS ===
+
+@dp.message(F.text == "🤖 My Bots Panel")
+async def bot_panel_handler(message: Message):
+    """Handle bot panel button."""
+    user = await BotService.update_user(message)
+    
+    await message.answer(
+        "🤖 **My Bots Panel**\n\nWelcome to your bot management center. Here you can:",
+        reply_markup=BotManagementKeyboards.get_bot_panel()
+    )
+
+@dp.message(F.text == "🤖 My Bots")
+async def my_bots_handler(message: Message):
+    """Handle my bots button."""
+    user = await BotService.update_user(message)
+    user_bots = await db.get_user_bots(user.user_id)
+    
+    bot_list_text = MessageFormatter.format_bot_list(user_bots, "all")
+    
+    await message.answer(
+        bot_list_text,
+        reply_markup=BotManagementKeyboards.get_my_bots_menu()
+    )
+
+@dp.message(F.text == "➕ Add New Bot")
+async def add_bot_handler(message: Message, state: FSMContext):
+    """Handle add new bot button."""
+    user = await BotService.update_user(message)
+    
+    await message.answer(
+        "🤖 **Add New Bot**\n\nLet's get your bot registered! First, what's your bot's name?\n\n📝 **Enter your bot name:**",
+        reply_markup=MainKeyboards.get_cancel_button()
+    )
+    
+    await state.set_state(BotManagementStates.waiting_for_bot_name)
+
+@dp.message(F.text == "👨‍💼 Contact Admin")
+async def contact_admin_handler(message: Message):
+    """Handle contact admin button."""
+    user = await BotService.update_user(message)
+    
+    await message.answer(
+        "👨‍💼 **Contact Admin**\n\nNeed help or have questions? Choose the type of message you'd like to send:",
+        reply_markup=BotManagementKeyboards.get_contact_admin_menu()
+    )
+
+@dp.message(F.text == "📜 Bot Guidelines")
+async def bot_guidelines_handler(message: Message):
+    """Handle bot guidelines button."""
+    user = await BotService.update_user(message)
+    guidelines_text = MessageFormatter.format_bot_guidelines()
+    
+    await message.answer(
+        guidelines_text,
+        reply_markup=BotManagementKeyboards.get_bot_panel()
+    )
+
+# FSM Handlers for Bot Management
+
+@dp.message(BotManagementStates.waiting_for_bot_name)
+async def bot_name_received(message: Message, state: FSMContext):
+    """Handle bot name input."""
+    if message.text == "❌ Cancel Operation":
+        await message.answer(
+            "❌ **Operation Cancelled**",
+            reply_markup=BotManagementKeyboards.get_bot_panel()
+        )
+        await state.clear()
+        return
+    
+    if not message.text or len(message.text) < 3 or len(message.text) > 50:
+        await message.answer(
+            "❌ **Invalid Bot Name**\n\nBot name must be between 3 and 50 characters. Please try again:"
+        )
+        return
+    
+    # Store bot name
+    await state.update_data(bot_name=message.text)
+    
+    await message.answer(
+        f"✅ **Bot Name:** {message.text}\n\nNow I need your bot token from @BotFather.\n\n🔑 **Send your bot token:**\n\n⚠️ Keep your token secure!",
+        reply_markup=MainKeyboards.get_cancel_button()
+    )
+    
+    await state.set_state(BotManagementStates.waiting_for_bot_token)
+
+@dp.message(BotManagementStates.waiting_for_bot_token)
+async def bot_token_received(message: Message, state: FSMContext):
+    """Handle bot token input."""
+    if message.text == "❌ Cancel Operation":
+        await message.answer(
+            "❌ **Operation Cancelled**",
+            reply_markup=BotManagementKeyboards.get_bot_panel()
+        )
+        await state.clear()
+        return
+    
+    if not message.text or not message.text.count(':') == 1 or len(message.text) < 40:
+        await message.answer(
+            "❌ **Invalid Bot Token**\n\nPlease provide a valid bot token from @BotFather. It should look like: 123456789:ABCdefGHIjklMNOpqrSTUvwxyz"
+        )
+        return
+    
+    # Store bot token
+    await state.update_data(bot_token=message.text)
+    
+    await message.answer(
+        "✅ **Bot Token Received**\n\nFinally, please provide a description of your bot (what it does, its features, etc.):\n\n📝 **Bot Description:**",
+        reply_markup=MainKeyboards.get_cancel_button()
+    )
+    
+    await state.set_state(BotManagementStates.waiting_for_bot_description)
+
+@dp.message(BotManagementStates.waiting_for_bot_description)
+async def bot_description_received(message: Message, state: FSMContext):
+    """Handle bot description input."""
+    if message.text == "❌ Cancel Operation":
+        await message.answer(
+            "❌ **Operation Cancelled**",
+            reply_markup=BotManagementKeyboards.get_bot_panel()
+        )
+        await state.clear()
+        return
+    
+    if not message.text or len(message.text) < 10 or len(message.text) > 500:
+        await message.answer(
+            "❌ **Invalid Description**\n\nDescription must be between 10 and 500 characters. Please try again:"
+        )
+        return
+    
+    # Store description and show confirmation
+    data = await state.get_data()
+    await state.update_data(bot_description=message.text)
+    
+    confirmation_text = f"""
+🤖 **Bot Submission Summary**
+
+• **Name:** {data['bot_name']}
+• **Token:** {data['bot_token'][:20]}...
+• **Description:** {message.text[:100]}{'...' if len(message.text) > 100 else ''}
+
+🔍 **Ready to Submit?**
+Your bot will be reviewed by admins and you'll be notified of the decision.
+    """
+    
+    await message.answer(
+        confirmation_text,
+        reply_markup=NavigationKeyboards.get_confirmation("bot_submission")
+    )
+    
+    await state.set_state(BotManagementStates.confirming_bot_submission)
+
+# Bot Management Callback Handlers
+
+@dp.callback_query(F.data == "confirm_bot_submission")
+async def confirm_bot_submission(callback: CallbackQuery, state: FSMContext):
+    """Confirm bot submission."""
+    user_id = callback.from_user.id
+    data = await state.get_data()
+    
+    # Add bot to database
+    bot_id = await db.add_user_bot(
+        user_id=user_id,
+        bot_name=data['bot_name'],
+        bot_token=data['bot_token'],
+        bot_description=data['bot_description']
+    )
+    
+    if bot_id:
+        await callback.message.edit_text(
+            "✅ **Bot Submitted Successfully!**\n\nYour bot has been submitted for review. You'll be notified when it's approved or if we need more information."
+        )
+        
+        # Notify admins about new bot submission
+        admin_ids = settings.get_admin_ids()
+        if admin_ids:
+            user = await db.get_user(user_id)
+            notification_text = f"""
+🆕 **New Bot Submission**
+
+👤 **User:** {user.display_name} (`{user_id}`)
+🤖 **Bot Name:** {data['bot_name']}
+📝 **Description:** {data['bot_description'][:100]}...
+
+💡 **Admin Actions:**
+• Use `/admin` to review and approve
+• Check bot functionality before approval
+            """
+            
+            for admin_id in admin_ids:
+                try:
+                    await bot.send_message(admin_id, notification_text)
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id}: {e}")
+    else:
+        await callback.message.edit_text(
+            "❌ **Submission Failed**\n\nThere was an error submitting your bot. Please try again later."
+        )
+    
+    await state.clear()
+    await callback.answer("✅ Bot submitted!")
+
+@dp.callback_query(F.data == "cancel_bot_submission")
+async def cancel_bot_submission(callback: CallbackQuery, state: FSMContext):
+    """Cancel bot submission."""
+    await callback.message.edit_text(
+        "❌ **Bot Submission Cancelled**"
+    )
+    await state.clear()
+    await callback.answer()
+
+# My Bots Callback Handlers
+
+@dp.callback_query(F.data.startswith("my_bots_"))
+async def my_bots_filter_callback(callback: CallbackQuery):
+    """Handle my bots filter callbacks."""
+    user_id = callback.from_user.id
+    filter_type = callback.data.split("_")[-1]
+    
+    user_bots = await db.get_user_bots(user_id)
+    
+    if filter_type != "all":
+        user_bots = [bot for bot in user_bots if bot['status'] == filter_type]
+    
+    bot_list_text = MessageFormatter.format_bot_list(user_bots, filter_type)
+    
+    try:
+        await callback.message.edit_text(
+            bot_list_text,
+            reply_markup=BotManagementKeyboards.get_my_bots_menu()
+        )
+    except Exception as e:
+        logger.debug(f"Message edit failed: {e}")
+    
+    await callback.answer(f"🤖 Showing {filter_type} bots")
+
+@dp.callback_query(F.data.startswith("contact_"))
+async def contact_admin_type_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle contact admin type selection."""
+    message_type = callback.data.split("_")[-1]
+    
+    form_text = MessageFormatter.format_contact_admin_form(message_type)
+    
+    await callback.message.edit_text(form_text)
+    await state.update_data(message_type=message_type)
+    await state.set_state(AdminMessageStates.waiting_for_message)
+    await callback.answer()
+
+@dp.message(AdminMessageStates.waiting_for_message)
+async def admin_message_received(message: Message, state: FSMContext):
+    """Handle admin message input."""
+    if not message.text or len(message.text) > 1000:
+        await message.answer(
+            "❌ **Invalid Message**\n\nMessage must be under 1000 characters. Please try again:"
+        )
+        return
+    
+    data = await state.get_data()
+    message_type = data.get('message_type', 'custom')
+    
+    # Create subject based on message type
+    subjects = {
+        "issue": "🆘 Issue Report",
+        "feature": "💡 Feature Request",
+        "question": "❓ General Question",
+        "bot_approval": "🤖 Bot Approval Query",
+        "custom": "📨 Custom Message"
+    }
+    
+    subject = subjects.get(message_type, subjects["custom"])
+    
+    # Show priority selection
+    await message.answer(
+        f"📝 **Message Preview:**\n{message.text[:200]}...\n\n📈 **Select Priority:**",
+        reply_markup=BotManagementKeyboards.get_priority_selection()
+    )
+    
+    await state.update_data(message_text=message.text, subject=subject)
+    await state.set_state(AdminMessageStates.waiting_for_priority)
+
+@dp.callback_query(F.data.startswith("priority_"))
+async def priority_selected_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle priority selection."""
+    priority = callback.data.split("_")[-1]
+    data = await state.get_data()
+    
+    # Create admin message
+    message_id = await db.create_admin_message(
+        user_id=callback.from_user.id,
+        subject=data['subject'],
+        message=data['message_text'],
+        priority=priority
+    )
+    
+    if message_id:
+        await callback.message.edit_text(
+            "✅ **Message Sent to Admin!**\n\nYour message has been sent to the administrators. You'll receive a response soon."
+        )
+        
+        # Notify admins about new message
+        admin_ids = settings.get_admin_ids()
+        if admin_ids:
+            user = await db.get_user(callback.from_user.id)
+            priority_emoji = {
+                "urgent": "🔴",
+                "high": "🟠",
+                "normal": "🟡",
+                "low": "🟢"
+            }.get(priority, "🟡")
+            
+            notification_text = f"""
+📨 **New Admin Message**
+
+👤 **From:** {user.display_name} (`{callback.from_user.id}`)
+{priority_emoji} **Priority:** {priority.title()}
+📝 **Subject:** {data['subject']}
+
+**Message:**
+{data['message_text'][:300]}{'...' if len(data['message_text']) > 300 else ''}
+
+💡 Use `/admin` to respond
+            """
+            
+            for admin_id in admin_ids:
+                try:
+                    await bot.send_message(admin_id, notification_text)
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id}: {e}")
+    else:
+        await callback.message.edit_text(
+            "❌ **Failed to Send Message**\n\nPlease try again later."
+        )
+    
+    await state.clear()
+    await callback.answer("📨 Message sent!")
 
 # Removed users_banned and users_search callback handlers as requested
 

@@ -139,24 +139,21 @@ class MessageFormatter:
                 "• User management and statistics",
                 "• Broadcasting and messaging tools", 
                 "• Administrative controls and settings",
-                ""
-            ])
-        else:
-            lines.extend([
-                "🎯 **Getting Started**",
-                "",
-                "Use the buttons below to:",
-                "• View your profile and information",
-                "• Get help and support",
-                "• Contact our support team",
+                "• Use `/admin` command to access admin panel",
                 ""
             ])
         
         lines.extend([
-            "🔧 **Navigation**",
-            "Use the menu buttons to navigate through the bot's features.",
+            "🎯 **Getting Started**",
             "",
-            "Need help? Press the 📋 **Help** button anytime!"
+            "Use the **🤖 My Bots Panel** button below to:",
+            "• View and manage your submitted bots",
+            "• Add new bot requests for approval",
+            "• Contact administrators for support",
+            "• Access bot submission guidelines",
+            "",
+            "🔧 **Navigation**",
+            "Use the menu button below to access the bot management panel."
         ])
         
         return "\n".join(lines)
@@ -272,6 +269,173 @@ We're here to help! 🤝
 "⚠️ Some delivery issues detected." if success_rate >= 80 else
 "❗ Consider checking your message content."
 }
+        """.strip()
+    
+    @staticmethod
+    def format_new_user_notification(user: 'User') -> str:
+        """Format new user registration notification for admins."""
+        join_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        return f"""
+🆕 **New User Registration Alert**
+
+👤 **User Information:**
+• **ID:** `{user.user_id}`
+• **Name:** {user.full_name}
+• **Username:** {'@' + user.username if user.username else 'None'}
+• **Joined:** {join_time}
+
+📊 **Quick Stats:**
+• Profile complete: {'✅' if user.username and user.first_name else '⚠️'}
+• Admin status: {'👑 Admin' if user.is_admin else '👤 User'}
+
+💡 **Admin Actions:**
+• Use `/admin` to manage users
+• View user details in admin panel
+• Monitor user activity
+        """.strip()
+    
+    @staticmethod
+    def format_bot_list(bots: List[Dict[str, Any]], status_filter: str = "all") -> str:
+        """Format bot list for display."""
+        if not bots:
+            status_text = {
+                "all": "You haven't added any bots yet.",
+                "pending": "No pending bot requests.",
+                "approved": "No approved bots.",
+                "rejected": "No rejected bot requests."
+            }.get(status_filter, "No bots found.")
+            
+            return f"""
+🤖 **My Bots** - {status_filter.title()}
+
+{status_text}
+
+💡 **Get Started:**
+• Use ➕ **Add New Bot** to submit your first bot
+• Follow our guidelines for faster approval
+• Contact admin if you need help
+            """.strip()
+        
+        lines = [f"🤖 **My Bots** - {status_filter.title()}\n"]
+        
+        for i, bot in enumerate(bots, 1):
+            status_emoji = {
+                "pending": "⏳",
+                "approved": "✅",
+                "rejected": "❌"
+            }.get(bot['status'], "🤖")
+            
+            created_date = datetime.fromisoformat(bot['created_at']).strftime('%Y-%m-%d')
+            
+            lines.append(f"{status_emoji} **{bot['bot_name']}**")
+            lines.append(f"└ Status: {bot['status'].title()} | Created: {created_date}")
+            if bot.get('bot_description'):
+                desc = bot['bot_description'][:50] + "..." if len(bot['bot_description']) > 50 else bot['bot_description']
+                lines.append(f"└ Description: {desc}")
+            lines.append("")
+        
+        return "\n".join(lines)
+    
+    @staticmethod
+    def format_bot_details(bot: Dict[str, Any]) -> str:
+        """Format detailed bot information."""
+        status_emoji = {
+            "pending": "⏳",
+            "approved": "✅",
+            "rejected": "❌"
+        }.get(bot['status'], "🤖")
+        
+        created_date = datetime.fromisoformat(bot['created_at']).strftime('%B %d, %Y at %H:%M')
+        
+        lines = [
+            f"{status_emoji} **Bot Details**",
+            "",
+            f"🤖 **Name:** {bot['bot_name']}",
+            f"🆔 **Status:** {bot['status'].title()}",
+            f"📅 **Submitted:** {created_date}"
+        ]
+        
+        if bot.get('bot_username'):
+            lines.append(f"📛 **Username:** @{bot['bot_username']}")
+        
+        if bot.get('bot_description'):
+            lines.extend([
+                "",
+                "📝 **Description:**",
+                bot['bot_description']
+            ])
+        
+        if bot.get('approved_at'):
+            approved_date = datetime.fromisoformat(bot['approved_at']).strftime('%B %d, %Y at %H:%M')
+            lines.append(f"✅ **Approved:** {approved_date}")
+        
+        if bot.get('notes'):
+            lines.extend([
+                "",
+                "📝 **Admin Notes:**",
+                bot['notes']
+            ])
+        
+        return "\n".join(lines)
+    
+    @staticmethod
+    def format_contact_admin_form(message_type: str) -> str:
+        """Format contact admin form prompt."""
+        prompts = {
+            "issue": "🆘 **Report an Issue**\n\nPlease describe the problem you're experiencing:",
+            "feature": "💡 **Feature Request**\n\nDescribe the feature you'd like to see:",
+            "question": "❓ **General Question**\n\nWhat would you like to know?",
+            "bot_approval": "🤖 **Bot Approval Query**\n\nAsk about your bot submission:",
+            "custom": "📨 **Custom Message**\n\nWrite your message to the admin:"
+        }
+        
+        base_prompt = prompts.get(message_type, prompts["custom"])
+        
+        return f"""
+{base_prompt}
+
+📝 **Guidelines:**
+• Be clear and specific
+• Include relevant details
+• Maximum 1000 characters
+• Please be patient for admin response
+
+💬 **Type your message below:**
+        """.strip()
+    
+    @staticmethod
+    def format_bot_guidelines() -> str:
+        """Format bot submission guidelines."""
+        return f"""
+📜 **Bot Submission Guidelines**
+
+🔍 **Before Submitting:**
+• Ensure your bot is fully functional
+• Test all commands and features
+• Have a clear purpose and description
+• Follow Telegram's Bot Guidelines
+
+✅ **Requirements:**
+• Valid bot token from @BotFather
+• Descriptive bot name and purpose
+• No spam, adult, or malicious content
+• Must comply with our terms of service
+
+🚀 **Approval Process:**
+1. Submit your bot with all required info
+2. Admin review (usually 24-48 hours)
+3. You'll be notified of approval/rejection
+4. Approved bots get hosting support
+
+⚠️ **Important Notes:**
+• Rejected bots can be resubmitted after fixes
+• Keep your bot token secure
+• Contact admin for technical support
+• Regular maintenance may be required
+
+🤝 **Need Help?**
+Use 👨‍💼 **Contact Admin** for questions!
         """.strip()
 
 

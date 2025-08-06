@@ -168,6 +168,43 @@ class DatabaseManager:
                         )
                     """)
                     
+                    # User bots table
+                    await db.execute("""
+                        CREATE TABLE IF NOT EXISTS user_bots (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER NOT NULL,
+                            bot_name TEXT NOT NULL,
+                            bot_token TEXT NOT NULL,
+                            bot_username TEXT,
+                            bot_description TEXT,
+                            status TEXT DEFAULT 'pending',
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            approved_at DATETIME NULL,
+                            approved_by INTEGER NULL,
+                            notes TEXT,
+                            FOREIGN KEY (user_id) REFERENCES users (user_id),
+                            FOREIGN KEY (approved_by) REFERENCES users (user_id)
+                        )
+                    """)
+                    
+                    # Admin messages table
+                    await db.execute("""
+                        CREATE TABLE IF NOT EXISTS admin_messages (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER NOT NULL,
+                            subject TEXT NOT NULL,
+                            message TEXT NOT NULL,
+                            status TEXT DEFAULT 'open',
+                            priority TEXT DEFAULT 'normal',
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            responded_at DATETIME NULL,
+                            responded_by INTEGER NULL,
+                            admin_response TEXT,
+                            FOREIGN KEY (user_id) REFERENCES users (user_id),
+                            FOREIGN KEY (responded_by) REFERENCES users (user_id)
+                        )
+                    """)
+                    
                     await db.commit()
                     
                     # Run migrations to add missing columns
@@ -492,6 +529,169 @@ class DatabaseManager:
                 
         except Exception as e:
             logger.error(f"Error logging broadcast: {e}")
+    
+    # Bot Management Methods
+    
+    async def add_user_bot(self, user_id: int, bot_name: str, bot_token: str, 
+                          bot_description: str = "") -> int:
+        """Add new bot request from user."""
+        try:
+            async with self.get_connection() as db:
+                cursor = await db.execute("""
+                    INSERT INTO user_bots 
+                    (user_id, bot_name, bot_token, bot_description) 
+                    VALUES (?, ?, ?, ?)
+                """, (user_id, bot_name, bot_token, bot_description))
+                await db.commit()
+                return cursor.lastrowid
+                
+        except Exception as e:
+            logger.error(f"Error adding bot for user {user_id}: {e}")
+            return None
+    
+    async def get_user_bots(self, user_id: int) -> List[Dict[str, Any]]:
+        """Get all bots for a specific user."""
+        try:
+            async with self.get_connection() as db:
+                cursor = await db.execute("""
+                    SELECT * FROM user_bots 
+                    WHERE user_id = ? 
+                    ORDER BY created_at DESC
+                """, (user_id,))
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+                
+        except Exception as e:
+            logger.error(f"Error getting bots for user {user_id}: {e}")
+            return []
+    
+    async def get_pending_bots(self) -> List[Dict[str, Any]]:
+        """Get all pending bot requests for admin review."""
+        try:
+            async with self.get_connection() as db:
+                cursor = await db.execute("""
+                    SELECT ub.*, u.first_name, u.last_name, u.username
+                    FROM user_bots ub
+                    JOIN users u ON ub.user_id = u.user_id
+                    WHERE ub.status = 'pending'
+                    ORDER BY ub.created_at ASC
+                """)
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+                
+        except Exception as e:
+            logger.error(f"Error getting pending bots: {e}")
+            return []
+    
+    async def approve_bot(self, bot_id: int, admin_id: int, notes: str = "") -> bool:
+        """Approve a bot request."""
+        try:
+            async with self.get_connection() as db:
+                await db.execute("""
+                    UPDATE user_bots 
+                    SET status = 'approved', approved_at = ?, approved_by = ?, notes = ?
+                    WHERE id = ?
+                """, (datetime.now(), admin_id, notes, bot_id))
+                await db.commit()
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error approving bot {bot_id}: {e}")
+            return False
+    
+    async def reject_bot(self, bot_id: int, admin_id: int, notes: str = "") -> bool:
+        """Reject a bot request."""
+        try:
+            async with self.get_connection() as db:
+                await db.execute("""
+                    UPDATE user_bots 
+                    SET status = 'rejected', approved_at = ?, approved_by = ?, notes = ?
+                    WHERE id = ?
+                """, (datetime.now(), admin_id, notes, bot_id))
+                await db.commit()
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error rejecting bot {bot_id}: {e}")
+            return False
+    
+    # Admin Messages Methods
+    
+    async def create_admin_message(self, user_id: int, subject: str, message: str,
+                                  priority: str = "normal") -> int:
+        """Create a new message to admin."""
+        try:
+            async with self.get_connection() as db:
+                cursor = await db.execute("""
+                    INSERT INTO admin_messages 
+                    (user_id, subject, message, priority) 
+                    VALUES (?, ?, ?, ?)
+                """, (user_id, subject, message, priority))
+                await db.commit()
+                return cursor.lastrowid
+                
+        except Exception as e:
+            logger.error(f"Error creating admin message for user {user_id}: {e}")
+            return None
+    
+    async def get_user_messages(self, user_id: int) -> List[Dict[str, Any]]:
+        """Get all messages from a specific user."""
+        try:
+            async with self.get_connection() as db:
+                cursor = await db.execute("""
+                    SELECT * FROM admin_messages 
+                    WHERE user_id = ? 
+                    ORDER BY created_at DESC
+                """, (user_id,))
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+                
+        except Exception as e:
+            logger.error(f"Error getting messages for user {user_id}: {e}")
+            return []
+    
+    async def get_open_messages(self) -> List[Dict[str, Any]]:
+        """Get all open admin messages."""
+        try:
+            async with self.get_connection() as db:
+                cursor = await db.execute("""
+                    SELECT am.*, u.first_name, u.last_name, u.username
+                    FROM admin_messages am
+                    JOIN users u ON am.user_id = u.user_id
+                    WHERE am.status = 'open'
+                    ORDER BY 
+                        CASE am.priority 
+                            WHEN 'urgent' THEN 1 
+                            WHEN 'high' THEN 2 
+                            WHEN 'normal' THEN 3 
+                            WHEN 'low' THEN 4 
+                        END,
+                        am.created_at ASC
+                """)
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+                
+        except Exception as e:
+            logger.error(f"Error getting open messages: {e}")
+            return []
+    
+    async def respond_to_message(self, message_id: int, admin_id: int, 
+                                response: str) -> bool:
+        """Respond to an admin message."""
+        try:
+            async with self.get_connection() as db:
+                await db.execute("""
+                    UPDATE admin_messages 
+                    SET status = 'responded', responded_at = ?, responded_by = ?, 
+                        admin_response = ?
+                    WHERE id = ?
+                """, (datetime.now(), admin_id, response, message_id))
+                await db.commit()
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error responding to message {message_id}: {e}")
+            return False
 
 
 # Global database instance
