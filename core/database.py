@@ -29,6 +29,7 @@ class User:
     join_date: datetime = None
     last_activity: datetime = None
     message_count: int = 0
+    language: str = None
     
     def __post_init__(self):
         if self.join_date is None:
@@ -116,7 +117,8 @@ class DatabaseManager:
                             last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
                             message_count INTEGER DEFAULT 0,
                             ban_until DATETIME NULL,
-                            ban_reason TEXT NULL
+                            ban_reason TEXT NULL,
+                            language TEXT DEFAULT NULL
                         )
                     """)
                     
@@ -246,6 +248,10 @@ class DatabaseManager:
                 logger.info("Adding ban_reason column to users table")
                 await db.execute("ALTER TABLE users ADD COLUMN ban_reason TEXT NULL")
             
+            if 'language' not in column_names:
+                logger.info("Adding language column to users table")
+                await db.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT NULL")
+            
             await db.commit()
             logger.info("Database migrations completed")
             
@@ -266,31 +272,45 @@ class DatabaseManager:
                 
                 if existing_user:
                     # Update existing user
-                    await db.execute("""
+                    update_query = """
                         UPDATE users 
                         SET username = ?, first_name = ?, last_name = ?, 
-                            last_activity = ?, message_count = message_count + 1
-                        WHERE user_id = ?
-                    """, (
+                            last_activity = ?
+                    """
+                    update_params = [
                         user_data.get('username'),
                         user_data.get('first_name'),
                         user_data.get('last_name'),
                         datetime.now(),
-                        user_data['user_id']
-                    ))
+                    ]
+                    
+                    # Only increment message count if this isn't just a language update
+                    if 'language' not in user_data or len(user_data) > 2:  # more than just user_id and language
+                        update_query += ", message_count = message_count + 1"
+                    
+                    # Only update language if provided
+                    if 'language' in user_data:
+                        update_query += ", language = ?"
+                        update_params.append(user_data['language'])
+                    
+                    update_query += " WHERE user_id = ?"
+                    update_params.append(user_data['user_id'])
+                    
+                    await db.execute(update_query, update_params)
                 else:
                     # Insert new user
                     is_admin = user_data['user_id'] in settings.get_admin_ids()
                     await db.execute("""
                         INSERT INTO users 
-                        (user_id, username, first_name, last_name, is_admin, message_count)
-                        VALUES (?, ?, ?, ?, ?, 1)
+                        (user_id, username, first_name, last_name, is_admin, message_count, language)
+                        VALUES (?, ?, ?, ?, ?, 1, ?)
                     """, (
                         user_data['user_id'],
                         user_data.get('username'),
                         user_data.get('first_name'),
                         user_data.get('last_name'),
-                        is_admin
+                        is_admin,
+                        user_data.get('language')
                     ))
                 
                 await db.commit()
@@ -326,7 +346,8 @@ class DatabaseManager:
                         is_banned=bool(row_dict.get('is_banned', False)),
                         join_date=datetime.fromisoformat(row_dict['join_date']),
                         last_activity=datetime.fromisoformat(row_dict['last_activity']),
-                        message_count=row_dict.get('message_count', 0)
+                        message_count=row_dict.get('message_count', 0),
+                        language=row_dict.get('language')
                     )
                 return None
                 
@@ -370,7 +391,8 @@ class DatabaseManager:
                         is_banned=bool(row['is_banned']),
                         join_date=datetime.fromisoformat(row['join_date']),
                         last_activity=datetime.fromisoformat(row['last_activity']),
-                        message_count=row['message_count']
+                        message_count=row['message_count'],
+                        language=row.get('language')
                     ) for row in rows
                 ]
                 

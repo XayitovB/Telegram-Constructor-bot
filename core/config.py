@@ -5,7 +5,7 @@ Configuration module using Pydantic for type validation and settings management.
 import os
 from pathlib import Path
 from typing import List, Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -58,26 +58,41 @@ class Settings(BaseSettings):
     contact: ContactConfig = Field(default_factory=ContactConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     
-    class Config:
-        env_file = ".env"
-        env_nested_delimiter = "__"
-        case_sensitive = False
+    model_config = {
+        "env_file": ".env",
+        "env_nested_delimiter": "__",
+        "case_sensitive": False
+    }
     
-    @validator('admin_user_ids', pre=True)
+    @field_validator('admin_user_ids', mode='before')
+    @classmethod
     def parse_admin_ids(cls, v):
         """Parse admin user IDs from string, int, or list."""
         if isinstance(v, str):
+            # Remove any quotes and brackets that might be present
+            v = v.strip().strip('"').strip("'").strip('[]')
             if ',' in v:
-                return [int(x.strip()) for x in v.split(',') if x.strip().isdigit()]
+                try:
+                    return [int(x.strip()) for x in v.split(',') if x.strip() and x.strip().isdigit()]
+                except ValueError:
+                    return []
             else:
-                return [int(v.strip())] if v.strip().isdigit() else []
+                try:
+                    return [int(v)] if v.isdigit() else []
+                except ValueError:
+                    return []
         elif isinstance(v, int):
             return [v]
         elif isinstance(v, list):
-            return v
+            # Ensure all elements are integers
+            try:
+                return [int(x) for x in v if str(x).isdigit()]
+            except (ValueError, TypeError):
+                return []
         return []
     
-    @validator('bot_token')
+    @field_validator('bot_token')
+    @classmethod
     def validate_token(cls, v):
         """Validate bot token format."""
         if not v or len(v) < 10:

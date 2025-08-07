@@ -10,6 +10,7 @@ from aiogram.types import BufferedInputFile
 
 from core.database import User, BotStats
 from core.config import settings
+from core.languages import get_text, get_language_name, DEFAULT_LANGUAGE
 
 
 class MessageFormatter:
@@ -120,43 +121,13 @@ class MessageFormatter:
         return "\n".join(lines)
     
     @staticmethod
-    def format_welcome_message(user_name: str, is_admin: bool = False) -> str:
-        """Format welcome message."""
-        lines = [
-            f"🤖 **Welcome to {settings.bot.name}!**",
-            "",
-            f"Hello, **{user_name}**! 👋",
-            "",
-            f"📋 {settings.bot.description}",
-            ""
-        ]
-        
+    def format_welcome_message(user_name: str, is_admin: bool = False, language: str = DEFAULT_LANGUAGE) -> str:
+        """Format welcome message with language support."""
+        admin_hint = ""
         if is_admin:
-            lines.extend([
-                "👑 **Administrator Access Granted**",
-                "",
-                "You have full access to all bot features including:",
-                "• User management and statistics",
-                "• Broadcasting and messaging tools", 
-                "• Administrative controls and settings",
-                "• Use `/admin` command to access admin panel",
-                ""
-            ])
+            admin_hint = get_text("admin_hint", language)
         
-        lines.extend([
-            "🎯 **Getting Started**",
-            "",
-            "Use the **🤖 My Bots Panel** button below to:",
-            "• View and manage your submitted bots",
-            "• Add new bot requests for approval",
-            "• Contact administrators for support",
-            "• Access bot submission guidelines",
-            "",
-            "🔧 **Navigation**",
-            "Use the menu button below to access the bot management panel."
-        ])
-        
-        return "\n".join(lines)
+        return get_text("welcome_message", language, name=user_name, admin_hint=admin_hint)
     
     @staticmethod
     def format_help_message(is_admin: bool = False) -> str:
