@@ -233,28 +233,151 @@ async def admin_command_handler(message: Message):
 
 @dp.message(F.text.in_(MY_BOTS_LABELS))
 async def my_bots_handler(message: Message):
-    """Handle My Bots button."""
+    """Handle My Bots button - Show user's created bots."""
     user = await BotService.update_user(message)
+    user_lang = user.language or DEFAULT_LANGUAGE
     
-    title = get_text("my_bots_title", user.language or DEFAULT_LANGUAGE)
-    text = get_text("my_bots_text", user.language or DEFAULT_LANGUAGE)
+    # Import bot manager
+    from bot_manager import bot_manager
     
-    await message.answer(
-        f"{title}\n\n{text}",
-        reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
-    )
+    try:
+        # Get user's bots
+        user_bots = await bot_manager.get_user_bots(user.user_id)
+        
+        if not user_bots:
+            # No bots created yet
+            if user_lang == 'uz':
+                text = (
+                    "🤖 **Mening botlarim**\n\n"
+                    "❌ Sizda hali yaratilgan bot yo'q.\n\n"
+                    "Yangi bot yaratish uchun **🤖 Bot qo'shish** tugmasini bosing."
+                )
+            elif user_lang == 'ru':
+                text = (
+                    "🤖 **Мои боты**\n\n"
+                    "❌ У вас пока нет созданных ботов.\n\n"
+                    "Для создания нового бота нажмите кнопку **🤖 Добавить бот**."
+                )
+            else:
+                text = (
+                    "🤖 **My Bots**\n\n"
+                    "❌ You haven't created any bots yet.\n\n"
+                    "To create a new bot, click the **🤖 Add Bot** button."
+                )
+        else:
+            # Show user's bots
+            if user_lang == 'uz':
+                text_lines = ["🤖 **Mening botlarim**\n"]
+                for bot_data in user_bots:
+                    status_emoji = "🟢" if bot_data['is_running'] else "🔴"
+                    status_text = "Ishlamoqda" if bot_data['is_running'] else "To'xtatilgan"
+                    created_date = bot_data['created_at'][:10] if bot_data.get('created_at') else 'Noma\'lum'
+                    
+                    text_lines.append(
+                        f"🤖 **{bot_data['bot_name']}**\n"
+                        f"📱 @{bot_data.get('bot_username', 'N/A')}\n"
+                        f"{status_emoji} {status_text}\n"
+                        f"📅 {created_date}\n"
+                    )
+                text_lines.append(f"\n📊 **Jami:** {len(user_bots)} ta bot")
+            elif user_lang == 'ru':
+                text_lines = ["🤖 **Мои боты**\n"]
+                for bot_data in user_bots:
+                    status_emoji = "🟢" if bot_data['is_running'] else "🔴"
+                    status_text = "Работает" if bot_data['is_running'] else "Остановлен"
+                    created_date = bot_data['created_at'][:10] if bot_data.get('created_at') else 'Неизвестно'
+                    
+                    text_lines.append(
+                        f"🤖 **{bot_data['bot_name']}**\n"
+                        f"📱 @{bot_data.get('bot_username', 'N/A')}\n"
+                        f"{status_emoji} {status_text}\n"
+                        f"📅 {created_date}\n"
+                    )
+                text_lines.append(f"\n📊 **Всего:** {len(user_bots)} ботов")
+            else:
+                text_lines = ["🤖 **My Bots**\n"]
+                for bot_data in user_bots:
+                    status_emoji = "🟢" if bot_data['is_running'] else "🔴"
+                    status_text = "Running" if bot_data['is_running'] else "Stopped"
+                    created_date = bot_data['created_at'][:10] if bot_data.get('created_at') else 'Unknown'
+                    
+                    text_lines.append(
+                        f"🤖 **{bot_data['bot_name']}**\n"
+                        f"📱 @{bot_data.get('bot_username', 'N/A')}\n"
+                        f"{status_emoji} {status_text}\n"
+                        f"📅 {created_date}\n"
+                    )
+                text_lines.append(f"\n📊 **Total:** {len(user_bots)} bots")
+            
+            text = "\n".join(text_lines)
+        
+        await message.answer(
+            text,
+            reply_markup=get_user_keyboard(user.is_admin, user_lang)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting user bots: {e}")
+        error_text = (
+            "❌ Botlarni yuklashda xatolik yuz berdi." if user_lang == 'uz' else
+            "❌ Ошибка при загрузке ботов." if user_lang == 'ru' else
+            "❌ Error loading bots."
+        )
+        await message.answer(
+            error_text,
+            reply_markup=get_user_keyboard(user.is_admin, user_lang)
+        )
 
 @dp.message(F.text.in_(ADD_BOTS_LABELS))
-async def add_bots_handler(message: Message):
-    """Handle Add Bots button."""
+async def add_bots_handler(message: Message, state: FSMContext):
+    """Handle Add Bots button - Start bot creation process."""
     user = await BotService.update_user(message)
     
-    title = get_text("add_bots_title", user.language or DEFAULT_LANGUAGE)
-    text = get_text("add_bots_text", user.language or DEFAULT_LANGUAGE)
+    # Get current user language
+    user_lang = user.language or DEFAULT_LANGUAGE
+    
+    if user_lang == 'uz':
+        text = (
+            "🤖 **Bot yaratish**\n\n"
+            "Yangi bot yaratish uchun botingizning tokenini yuboring.\n\n"
+            "**Token olish yo'li:**\n"
+            "1. @BotFather ga o'ting\n"
+            "2. /newbot buyrug'ini yuboring\n"
+            "3. Bot nomini kiriting\n"
+            "4. Bot username kiriting\n"
+            "5. Tokenni nusxalab, bu yerga yuboring\n\n"
+            "⚠️ **Diqqat:** Token maxfiy ma'lumot, boshqalar bilan baham ko'rmang!"
+        )
+    elif user_lang == 'ru':
+        text = (
+            "🤖 **Создание бота**\n\n"
+            "Для создания нового бота отправьте токен вашего бота.\n\n"
+            "**Как получить токен:**\n"
+            "1. Перейдите к @BotFather\n"
+            "2. Отправьте команду /newbot\n"
+            "3. Введите имя бота\n"
+            "4. Введите username бота\n"
+            "5. Скопируйте токен и отправьте его сюда\n\n"
+            "⚠️ **Внимание:** Токен - секретная информация, не делитесь ею с другими!"
+        )
+    else:
+        text = (
+            "🤖 **Create Bot**\n\n"
+            "To create a new bot, send your bot token.\n\n"
+            "**How to get token:**\n"
+            "1. Go to @BotFather\n"
+            "2. Send /newbot command\n"
+            "3. Enter bot name\n"
+            "4. Enter bot username\n"
+            "5. Copy token and send it here\n\n"
+            "⚠️ **Warning:** Token is secret information, don't share it with others!"
+        )
+    
+    await state.set_state(BotManagementStates.waiting_for_bot_token)
     
     await message.answer(
-        f"{title}\n\n{text}",
-        reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
+        text,
+        reply_markup=MainKeyboards.get_cancel_button()
     )
 
 
@@ -1157,6 +1280,265 @@ async def users_admins_callback(callback: CallbackQuery):
 
 
 
+# === BOT CREATION STATE HANDLERS ===
+
+@dp.message(BotManagementStates.waiting_for_bot_token)
+async def bot_token_received(message: Message, state: FSMContext):
+    """Handle bot token submission."""
+    user = await BotService.update_user(message)
+    
+    # Check if user wants to cancel
+    if message.text == "❌ Cancel Operation":
+        await state.clear()
+        await message.answer(
+            "❌ **Operation cancelled**",
+            reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
+        )
+        return
+    
+    if not message.text:
+        user_lang = user.language or DEFAULT_LANGUAGE
+        error_text = "❌ Iltimos, bot tokenini yuboring!" if user_lang == 'uz' else (
+            "❌ Пожалуйста, отправьте токен бота!" if user_lang == 'ru' else
+            "❌ Please send the bot token!"
+        )
+        await message.answer(error_text)
+        return
+    
+    token = message.text.strip()
+    user_lang = user.language or DEFAULT_LANGUAGE
+    
+    # Show validation message
+    validating_text = "🔍 Token tekshirilmoqda..." if user_lang == 'uz' else (
+        "🔍 Проверяем токен..." if user_lang == 'ru' else
+        "🔍 Validating token..."
+    )
+    
+    validation_msg = await message.answer(validating_text)
+    
+    # Import bot manager here to avoid circular imports
+    from bot_manager import bot_manager
+    
+    try:
+        # Validate token with Telegram API
+        bot_info = await bot_manager.validate_bot_token(token)
+        
+        if not bot_info.is_valid:
+            error_text = (
+                f"❌ **Token noto'g'ri!**\n\n"
+                f"Xatolik: {bot_info.error_message}\n\n"
+                f"Iltimos, to'g'ri tokenni yuboring."
+                if user_lang == 'uz' else
+                f"❌ **Неверный токен!**\n\n"
+                f"Ошибка: {bot_info.error_message}\n\n"
+                f"Пожалуйста, отправьте правильный токен."
+                if user_lang == 'ru' else
+                f"❌ **Invalid token!**\n\n"
+                f"Error: {bot_info.error_message}\n\n"
+                f"Please send a valid token."
+            )
+            
+            await validation_msg.edit_text(error_text)
+            return
+        
+        # Token is valid, show bot info and confirmation
+        bot_name = bot_info.first_name
+        bot_username = bot_info.username
+        
+        confirmation_text = (
+            f"✅ **Bot topildi!**\n\n"
+            f"🤖 **Nom:** {bot_name}\n"
+            f"👤 **Username:** @{bot_username}\n"
+            f"🆔 **ID:** `{bot_info.id}`\n\n"
+            f"Bu botni yaratishni xohlaysizmi?"
+            if user_lang == 'uz' else
+            f"✅ **Бот найден!**\n\n"
+            f"🤖 **Имя:** {bot_name}\n"
+            f"👤 **Username:** @{bot_username}\n"
+            f"🆔 **ID:** `{bot_info.id}`\n\n"
+            f"Хотите создать этого бота?"
+            if user_lang == 'ru' else
+            f"✅ **Bot found!**\n\n"
+            f"🤖 **Name:** {bot_name}\n"
+            f"👤 **Username:** @{bot_username}\n"
+            f"🆔 **ID:** `{bot_info.id}`\n\n"
+            f"Do you want to create this bot?"
+        )
+        
+        # Store bot data in session
+        user_sessions[user.user_id] = {
+            'bot_token': token,
+            'bot_info': bot_info,
+            'bot_name': bot_name
+        }
+        
+        # Create confirmation keyboard
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        
+        yes_text = "✅ Ha, yaratish" if user_lang == 'uz' else ("✅ Да, создать" if user_lang == 'ru' else "✅ Yes, create")
+        no_text = "❌ Yo'q, bekor qilish" if user_lang == 'uz' else ("❌ Нет, отменить" if user_lang == 'ru' else "❌ No, cancel")
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=yes_text, callback_data="create_bot_confirm")],
+            [InlineKeyboardButton(text=no_text, callback_data="create_bot_cancel")]
+        ])
+        
+        await validation_msg.edit_text(confirmation_text, reply_markup=keyboard)
+        await state.set_state(BotManagementStates.confirming_bot_submission)
+        
+    except Exception as e:
+        logger.error(f"Error validating bot token: {e}")
+        error_text = (
+            "❌ **Xatolik!**\n\nTokenni tekshirishda xatolik yuz berdi. Iltimos qaytadan urinib ko'ring."
+            if user_lang == 'uz' else
+            "❌ **Ошибка!**\n\nОшибка при проверке токена. Пожалуйста, попробуйте снова."
+            if user_lang == 'ru' else
+            "❌ **Error!**\n\nError validating token. Please try again."
+        )
+        await validation_msg.edit_text(error_text)
+
+
+@dp.callback_query(F.data == "create_bot_confirm")
+async def create_bot_confirm_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle bot creation confirmation."""
+    user_id = callback.from_user.id
+    
+    if user_id not in user_sessions:
+        await callback.answer("❌ Session expired. Please try again.", show_alert=True)
+        await state.clear()
+        return
+    
+    session_data = user_sessions[user_id]
+    user = await db.get_user(user_id)
+    user_lang = user.language if user else DEFAULT_LANGUAGE
+    
+    # Show creating message
+    creating_text = "🔄 Bot yaratilmoqda..." if user_lang == 'uz' else (
+        "🔄 Создаем бота..." if user_lang == 'ru' else
+        "🔄 Creating bot..."
+    )
+    
+    await callback.message.edit_text(creating_text)
+    
+    # Import bot manager
+    from bot_manager import bot_manager
+    
+    try:
+        # Create the bot
+        success, message, bot_id = await bot_manager.create_bot_request(
+            user_id=user_id,
+            bot_name=session_data['bot_name'],
+            bot_token=session_data['bot_token'],
+            bot_info=session_data['bot_info']
+        )
+        
+        if success:
+            success_text = (
+                f"✅ **Bot muvaffaqiyatli yaratildi!**\n\n"
+                f"🤖 **Bot:** {session_data['bot_name']}\n"
+                f"📱 **Username:** @{session_data['bot_info'].username}\n"
+                f"🚀 **Holat:** Ishlamoqda\n\n"
+                f"Botingiz tayyor va foydalanishga ochiq!"
+                if user_lang == 'uz' else
+                f"✅ **Бот успешно создан!**\n\n"
+                f"🤖 **Бот:** {session_data['bot_name']}\n"
+                f"📱 **Username:** @{session_data['bot_info'].username}\n"
+                f"🚀 **Статус:** Работает\n\n"
+                f"Ваш бот готов к использованию!"
+                if user_lang == 'ru' else
+                f"✅ **Bot created successfully!**\n\n"
+                f"🤖 **Bot:** {session_data['bot_name']}\n"
+                f"📱 **Username:** @{session_data['bot_info'].username}\n"
+                f"🚀 **Status:** Running\n\n"
+                f"Your bot is ready to use!"
+            )
+            
+            # Notify admins about new bot
+            admin_notification = (
+                f"🆕 **New Bot Created**\n\n"
+                f"👤 **User:** {callback.from_user.full_name} (@{callback.from_user.username or 'N/A'})\n"
+                f"🤖 **Bot:** {session_data['bot_name']}\n"
+                f"📱 **Username:** @{session_data['bot_info'].username}\n"
+                f"🆔 **Bot ID:** {bot_id}\n"
+                f"🚀 **Status:** Running"
+            )
+            
+            # Send notification to admins
+            for admin_id in settings.get_admin_ids():
+                try:
+                    await bot.send_message(admin_id, admin_notification)
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id}: {e}")
+            
+        else:
+            success_text = f"❌ **Xatolik:** {message}" if user_lang == 'uz' else (
+                f"❌ **Ошибка:** {message}" if user_lang == 'ru' else
+                f"❌ **Error:** {message}"
+            )
+        
+        await callback.message.edit_text(success_text)
+        
+        # Cleanup
+        if user_id in user_sessions:
+            del user_sessions[user_id]
+        await state.clear()
+        
+        # Send main menu after delay
+        await asyncio.sleep(3)
+        user = await db.get_user(user_id)
+        if user:
+            await bot.send_message(
+                callback.message.chat.id,
+                get_text("back_main_menu", user.language or DEFAULT_LANGUAGE),
+                reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
+            )
+            
+    except Exception as e:
+        logger.error(f"Error creating bot: {e}")
+        error_text = (
+            "❌ **Xatolik!**\n\nBot yaratishda xatolik yuz berdi. Iltimos qaytadan urinib ko'ring."
+            if user_lang == 'uz' else
+            "❌ **Ошибка!**\n\nОшибка при создании бота. Пожалуйста, попробуйте снова."
+            if user_lang == 'ru' else
+            "❌ **Error!**\n\nError creating bot. Please try again."
+        )
+        await callback.message.edit_text(error_text)
+        
+        # Cleanup
+        if user_id in user_sessions:
+            del user_sessions[user_id]
+        await state.clear()
+
+
+@dp.callback_query(F.data == "create_bot_cancel")
+async def create_bot_cancel_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle bot creation cancellation."""
+    user_id = callback.from_user.id
+    user = await db.get_user(user_id)
+    user_lang = user.language if user else DEFAULT_LANGUAGE
+    
+    cancel_text = "❌ Bot yaratish bekor qilindi." if user_lang == 'uz' else (
+        "❌ Создание бота отменено." if user_lang == 'ru' else
+        "❌ Bot creation cancelled."
+    )
+    
+    await callback.message.edit_text(cancel_text)
+    
+    # Cleanup
+    if user_id in user_sessions:
+        del user_sessions[user_id]
+    await state.clear()
+    
+    # Send main menu
+    await asyncio.sleep(2)
+    if user:
+        await bot.send_message(
+            callback.message.chat.id,
+            get_text("back_main_menu", user.language or DEFAULT_LANGUAGE),
+            reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
+        )
+
+
 # === ERROR HANDLERS ===
 
 @dp.message()
@@ -1201,6 +1583,14 @@ async def main():
             await db.add_or_update_user(admin_user_data)
         
         logger.info(f"Added {len(settings.get_admin_ids())} initial administrators")
+        
+        # Initialize and start user bots
+        try:
+            from bot_manager import bot_manager
+            await bot_manager.start_all_approved_bots()
+            logger.info("User bots initialization completed")
+        except Exception as e:
+            logger.error(f"Error starting user bots: {e}")
         
         # Set bot commands
         commands = [
