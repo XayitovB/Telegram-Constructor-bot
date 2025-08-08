@@ -133,6 +133,7 @@ config.yaml
 *.db
 logs/
 data/
+user_bots/
 
 # IDE
 .vscode/

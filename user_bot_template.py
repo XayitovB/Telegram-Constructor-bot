@@ -47,6 +47,7 @@ class UserBotTemplate:
         # Active chats storage
         self.active_chats = {}  # {user_id: partner_id}
         self.waiting_users = []  # Queue of users waiting for chat
+        self.user_states = {}  # Track user states manually: {user_id: state}
         
         # Setup handlers
         self._setup_handlers()
@@ -116,47 +117,71 @@ class UserBotTemplate:
             
             # Try to find a partner
             if self.waiting_users:
-                partner_id = self.waiting_users.pop(0)
+                # Don't match with self
+                available_partners = [pid for pid in self.waiting_users if pid != user_id]
                 
-                # Create chat connection
-                self.active_chats[user_id] = partner_id
-                self.active_chats[partner_id] = user_id
-                
-                # Notify both users
-                connect_msg = (
-                    "✅ <b>Suhbatdosh topildi!</b>\n\n"
-                    "💬 Suhbat boshlandi. Xabar yuboring!\n"
-                    "❌ Suhbatni tugatish: /stop"
-                )
-                
-                keyboard = self._get_in_chat_keyboard()
-                
-                await state.set_state(ChatStates.in_chat)
-                await message.answer(connect_msg, reply_markup=keyboard)
-                
-                try:
-                    partner_state = FSMContext(
-                        bot=self.bot,
-                        storage=self.dp.storage,
-                        key=self.dp.storage.get_key(
-                            bot_id=self.bot.id,
-                            chat_id=partner_id,
-                            user_id=partner_id
-                        )
+                if available_partners:
+                    partner_id = available_partners[0]
+                    self.waiting_users.remove(partner_id)
+                    
+                    # Create chat connection
+                    self.active_chats[user_id] = partner_id
+                    self.active_chats[partner_id] = user_id
+                    
+                    # Notify both users
+                    connect_msg = (
+                        "✅ <b>Suhbatdosh topildi!</b>\n\n"
+                        "💬 Suhbat boshlandi. Xabar yuboring!\n"
+                        "❌ Suhbatni tugatish: /stop"
                     )
-                    await partner_state.set_state(ChatStates.in_chat)
-                    await self.bot.send_message(partner_id, connect_msg, reply_markup=keyboard)
-                except Exception as e:
-                    self.logger.error(f"Error notifying partner {partner_id}: {e}")
-                    # Clean up connection
-                    del self.active_chats[user_id]
-                    if partner_id in self.active_chats:
-                        del self.active_chats[partner_id]
-                    await message.answer("❌ Xatolik yuz berdi. Qayta urinib ko'ring.")
+                    
+                    keyboard = self._get_in_chat_keyboard()
+                    
+                    # Set state for current user
+                    await state.set_state(ChatStates.in_chat)
+                    # Set manual state for partner
+                    self.user_states[user_id] = 'in_chat'
+                    self.user_states[partner_id] = 'in_chat'
+                    
+                    await message.answer(connect_msg, reply_markup=keyboard)
+                    
+                    # Notify partner
+                    try:
+                        await self.bot.send_message(partner_id, connect_msg, reply_markup=keyboard)
+                        self.logger.info(f"Chat connection established between {user_id} and {partner_id}")
+                        
+                        # Log chat start in database
+                        await self._log_message(user_id, "chat_start", f"Started chat with {partner_id}")
+                        await self._log_message(partner_id, "chat_start", f"Started chat with {user_id}")
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error notifying partner {partner_id}: {e}")
+                        # Clean up connection on error
+                        self.active_chats.pop(user_id, None)
+                        self.active_chats.pop(partner_id, None)
+                        await message.answer("❌ Xatolik yuz berdi. Qayta urinib ko'ring.")
+                        # Return partner to waiting queue if they're still available
+                        if partner_id not in self.waiting_users:
+                            self.waiting_users.append(partner_id)
+                else:
+                    # No available partners, add to waiting queue
+                    self.waiting_users.append(user_id)
+                    await state.set_state(ChatStates.waiting_for_partner)
+                    self.user_states[user_id] = 'waiting_for_partner'
+                    
+                    wait_msg = (
+                        "🔍 <b>Suhbatdosh qidirilmoqda...</b>\n\n"
+                        "⏳ Iltimos kuting, tez orada suhbatdosh topiladi.\n"
+                        "❌ Qidirishni bekor qilish: /stop"
+                    )
+                    
+                    keyboard = self._get_waiting_keyboard()
+                    await message.answer(wait_msg, reply_markup=keyboard)
             else:
                 # Add to waiting queue
                 self.waiting_users.append(user_id)
                 await state.set_state(ChatStates.waiting_for_partner)
+                self.user_states[user_id] = 'waiting_for_partner'
                 
                 wait_msg = (
                     "🔍 <b>Suhbatdosh qidirilmoqda...</b>\n\n"
@@ -171,52 +196,75 @@ class UserBotTemplate:
         async def stop_chat(message: Message, state: FSMContext):
             """Handle /stop command - stop current chat."""
             user_id = message.from_user.id
+            action_taken = False
             
             # Check if in waiting queue
             if user_id in self.waiting_users:
                 self.waiting_users.remove(user_id)
                 await state.clear()
+                self.user_states.pop(user_id, None)
                 await message.answer(
                     "✅ Qidiruv bekor qilindi.",
                     reply_markup=self._get_main_chat_keyboard()
                 )
-                return
+                self.logger.info(f"User {user_id} cancelled search")
+                action_taken = True
             
             # Check if in active chat
             if user_id in self.active_chats:
-                partner_id = self.active_chats[user_id]
+                partner_id = self.active_chats.get(user_id)
                 
-                # Remove chat connection
-                del self.active_chats[user_id]
-                del self.active_chats[partner_id]
+                # Remove chat connections
+                self.active_chats.pop(user_id, None)
+                if partner_id:
+                    self.active_chats.pop(partner_id, None)
                 
-                # Notify both users
+                # Clear states
+                self.user_states.pop(user_id, None)
+                if partner_id:
+                    self.user_states.pop(partner_id, None)
+                
+                # Notify current user
                 stop_msg = "❌ Suhbat tugatildi."
                 keyboard = self._get_main_chat_keyboard()
-                
                 await state.clear()
                 await message.answer(stop_msg, reply_markup=keyboard)
                 
-                try:
-                    partner_state = FSMContext(
-                        bot=self.bot,
-                        storage=self.dp.storage,
-                        key=self.dp.storage.get_key(
-                            bot_id=self.bot.id,
-                            chat_id=partner_id,
-                            user_id=partner_id
+                # Notify partner if exists
+                if partner_id:
+                    try:
+                        await self.bot.send_message(
+                            partner_id,
+                            "❌ Suhbatdosh suhbatni tark etdi.",
+                            reply_markup=keyboard
                         )
-                    )
-                    await partner_state.clear()
-                    await self.bot.send_message(
-                        partner_id,
-                        "❌ Suhbatdosh suhbatni tark etdi.",
-                        reply_markup=keyboard
-                    )
-                except Exception as e:
-                    self.logger.error(f"Error notifying partner {partner_id}: {e}")
-            else:
-                await message.answer("❌ Siz hozir suhbatda emassiz.")
+                        self.logger.info(f"Chat ended between {user_id} and {partner_id}")
+                        
+                        # Log chat end
+                        await self._log_message(user_id, "chat_end", f"Ended chat with {partner_id}")
+                        await self._log_message(partner_id, "chat_end", f"Partner {user_id} left chat")
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error notifying partner {partner_id}: {e}")
+                else:
+                    self.logger.info(f"Cleaned up orphaned chat state for user {user_id}")
+                
+                action_taken = True
+            
+            # If no specific action was taken, still clean up state and provide guidance
+            if not action_taken:
+                await state.clear()
+                self.user_states.pop(user_id, None)
+                # Remove from any remaining queues just in case
+                if user_id in self.waiting_users:
+                    self.waiting_users.remove(user_id)
+                
+                await message.answer(
+                    "✅ Barcha holatlar tozalandi.\n\n"
+                    "💬 Yangi suhbat boshlash uchun /search buyrug'ini yuboring.",
+                    reply_markup=self._get_main_chat_keyboard()
+                )
+                self.logger.info(f"Force cleaned all states for user {user_id}")
         
         @self.dp.message(Command("next"))
         async def next_partner(message: Message, state: FSMContext):
@@ -296,11 +344,57 @@ class UserBotTemplate:
                 reply_markup=self._get_main_chat_keyboard()
             )
         
-        # Handle regular messages in chat
+        # Handle keyboard buttons FIRST (before message forwarding)
+        @self.dp.message(F.text == "🔍 Suhbat qidirish")
+        async def search_button_handler(message: Message, state: FSMContext):
+            """Handle search button."""
+            await search_partner(message, state)
+        
+        @self.dp.message(F.text == "❓ Yordam")
+        async def help_button_handler(message: Message, state: FSMContext):
+            """Handle help button."""
+            help_text = (
+                "🎭 <b>Anonim Chat Bot</b>\n\n"
+                "💬 Bu bot orqali boshqa foydalanuvchilar bilan anonim suhbatlashishingiz mumkin.\n\n"
+                "<b>Buyruqlar:</b>\n"
+                "/start - Botni boshlash\n"
+                "/search - Suhbatdosh qidirish\n"
+                "/stop - Suhbatni tugatish\n"
+                "/next - Keyingi suhbatdosh\n\n"
+                "<i>Bot egasi /admin buyrug'i orqali admin panelga kirishi mumkin.</i>"
+            )
+            await message.answer(help_text)
+        
+        @self.dp.message(F.text == "❌ Suhbatni tugatish")
+        async def stop_button_handler(message: Message, state: FSMContext):
+            """Handle stop chat button."""
+            await self._force_stop_everything(message, state)
+        
+        @self.dp.message(F.text == "⏭ Keyingi suhbatdosh")
+        async def next_button_handler(message: Message, state: FSMContext):
+            """Handle next partner button."""
+            await next_partner(message, state)
+        
+        @self.dp.message(F.text == "❌ Qidirishni bekor qilish")
+        async def cancel_search_button_handler(message: Message, state: FSMContext):
+            """Handle cancel search button."""
+            await self._force_stop_everything(message, state)
+        
+        # Handle regular messages in chat (AFTER button handlers)
         @self.dp.message(ChatStates.in_chat)
         async def handle_chat_message(message: Message, state: FSMContext):
             """Forward messages between chat partners."""
             user_id = message.from_user.id
+            
+            # Check if this is a button text that should not be forwarded
+            button_texts = {
+                "🔍 Suhbat qidirish", "❓ Yordam", "❌ Suhbatni tugatish", 
+                "⏭ Keyingi suhbatdosh", "❌ Qidirishni bekor qilish"
+            }
+            if message.text in button_texts:
+                # This should have been handled by button handlers above
+                self.logger.warning(f"Button text '{message.text}' reached message forwarding handler")
+                return
             
             if user_id not in self.active_chats:
                 await state.clear()
@@ -342,42 +436,6 @@ class UserBotTemplate:
                 self.logger.error(f"Error forwarding message from {user_id} to {partner_id}: {e}")
                 await message.reply("❌ Xabar yuborishda xatolik yuz berdi.")
         
-        # Handle keyboard buttons
-        @self.dp.message(F.text == "🔍 Suhbat qidirish")
-        async def search_button_handler(message: Message, state: FSMContext):
-            """Handle search button."""
-            await search_partner(message, state)
-        
-        @self.dp.message(F.text == "❓ Yordam")
-        async def help_button_handler(message: Message, state: FSMContext):
-            """Handle help button."""
-            help_text = (
-                "🎭 <b>Anonim Chat Bot</b>\n\n"
-                "💬 Bu bot orqali boshqa foydalanuvchilar bilan anonim suhbatlashishingiz mumkin.\n\n"
-                "<b>Buyruqlar:</b>\n"
-                "/start - Botni boshlash\n"
-                "/search - Suhbatdosh qidirish\n"
-                "/stop - Suhbatni tugatish\n"
-                "/next - Keyingi suhbatdosh\n\n"
-                "<i>Bot egasi /admin buyrug'i orqali admin panelga kirishi mumkin.</i>"
-            )
-            await message.answer(help_text)
-        
-        @self.dp.message(F.text == "❌ Suhbatni tugatish")
-        async def stop_button_handler(message: Message, state: FSMContext):
-            """Handle stop chat button."""
-            await stop_chat(message, state)
-        
-        @self.dp.message(F.text == "⏭ Keyingi suhbatdosh")
-        async def next_button_handler(message: Message, state: FSMContext):
-            """Handle next partner button."""
-            await next_partner(message, state)
-        
-        @self.dp.message(F.text == "❌ Qidirishni bekor qilish")
-        async def cancel_search_button_handler(message: Message, state: FSMContext):
-            """Handle cancel search button."""
-            await stop_chat(message, state)
-        
         # Admin panel button handlers
         @self.dp.message(F.text == "👥 Foydalanuvchilar", ChatStates.admin_panel)
         async def admin_users_button(message: Message, state: FSMContext):
@@ -403,8 +461,51 @@ class UserBotTemplate:
         @self.dp.message()
         async def handle_other_messages(message: Message, state: FSMContext):
             """Handle messages outside of chat state."""
+            user_id = message.from_user.id
             current_state = await state.get_state()
             
+            # Check if user is in chat based on our manual tracking
+            if user_id in self.active_chats:
+                # User is in chat, forward the message
+                partner_id = self.active_chats[user_id]
+                
+                try:
+                    # Forward different types of messages
+                    if message.text:
+                        await self.bot.send_message(partner_id, f"👤 <i>Suhbatdosh:</i>\n{message.text}")
+                    elif message.photo:
+                        await self.bot.send_photo(
+                            partner_id,
+                            message.photo[-1].file_id,
+                            caption=f"👤 <i>Suhbatdosh:</i>\n{message.caption or ''}"
+                        )
+                    elif message.video:
+                        await self.bot.send_video(
+                            partner_id,
+                            message.video.file_id,
+                            caption=f"👤 <i>Suhbatdosh:</i>\n{message.caption or ''}"
+                        )
+                    elif message.voice:
+                        await self.bot.send_voice(partner_id, message.voice.file_id)
+                    elif message.sticker:
+                        await self.bot.send_sticker(partner_id, message.sticker.file_id)
+                    else:
+                        await message.reply("❌ Bu turdagi xabar qo'llab-quvvatlanmaydi.")
+                    
+                    # Update message count
+                    await self._update_message_count(user_id)
+                    
+                    # Set FSM state to in_chat if it's not already set correctly
+                    if current_state != ChatStates.in_chat:
+                        await state.set_state(ChatStates.in_chat)
+                    
+                except Exception as e:
+                    self.logger.error(f"Error forwarding message from {user_id} to {partner_id}: {e}")
+                    await message.reply("❌ Xabar yuborishda xatolik yuz berdi.")
+                
+                return
+            
+            # Normal state handling for users not in chat
             if current_state == ChatStates.waiting_for_partner:
                 await message.answer(
                     "⏳ Siz hali suhbatdosh kutmoqdasiz...\n"
@@ -590,28 +691,19 @@ class UserBotTemplate:
         """Get language selection keyboard."""
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         
+        # Define supported languages for user bots
+        supported_languages = {
+            'uz': '🇺🇿 O\'zbek',
+            'ru': '🇷🇺 Русский',
+            'en': '🇺🇸 English'
+        }
+        
         buttons = []
-        for lang_code, lang_name in self.settings['supported_languages'].items():
+        for lang_code, lang_name in supported_languages.items():
             buttons.append([InlineKeyboardButton(text=lang_name, callback_data=f'lang_{lang_code}')])
         
         return InlineKeyboardMarkup(inline_keyboard=buttons)
     
-    def _get_main_keyboard(self, language: str):
-        """Get main menu keyboard."""
-        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-        
-        buttons_config = self.settings['buttons'][language]
-        buttons = [
-            [KeyboardButton(text=buttons_config['profile']), KeyboardButton(text=buttons_config['stats'])],
-            [KeyboardButton(text=buttons_config['settings']), KeyboardButton(text=buttons_config['help'])],
-            [KeyboardButton(text=buttons_config['support'])]
-        ]
-        
-        return ReplyKeyboardMarkup(
-            keyboard=buttons,
-            resize_keyboard=True,
-            one_time_keyboard=False
-        )
     
     def _get_settings_keyboard(self, language: str):
         """Get settings keyboard."""
@@ -760,6 +852,69 @@ class UserBotTemplate:
                 (user_id,)
             )
             await db.commit()
+    
+    async def _log_message(self, user_id: int, message_type: str, message_text: str = ""):
+        """Log a message to the database."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    "INSERT INTO messages (user_id, message_type, message_text) VALUES (?, ?, ?)",
+                    (user_id, message_type, message_text[:500])  # Limit message length
+                )
+                await db.commit()
+        except Exception as e:
+            self.logger.error(f"Error logging message for user {user_id}: {e}")
+    
+    async def _force_stop_everything(self, message: Message, state: FSMContext):
+        """Force stop all user activities - robust cleanup for cancel search."""
+        user_id = message.from_user.id
+        
+        # Clear FSM state no matter what
+        await state.clear()
+        
+        # Remove from waiting queue if present
+        if user_id in self.waiting_users:
+            self.waiting_users.remove(user_id)
+            self.logger.info(f"Removed user {user_id} from waiting queue")
+        
+        # Handle active chat cleanup
+        if user_id in self.active_chats:
+            partner_id = self.active_chats.get(user_id)
+            
+            # Remove chat connections
+            self.active_chats.pop(user_id, None)
+            if partner_id:
+                self.active_chats.pop(partner_id, None)
+                
+            # Notify partner if exists
+            if partner_id:
+                try:
+                    await self.bot.send_message(
+                        partner_id,
+                        "❌ Suhbatdosh suhbatni tark etdi.",
+                        reply_markup=self._get_main_chat_keyboard()
+                    )
+                    self.logger.info(f"Notified partner {partner_id} about chat end")
+                    
+                    # Log chat end
+                    await self._log_message(user_id, "chat_end", f"Force ended chat with {partner_id}")
+                    await self._log_message(partner_id, "chat_end", f"Partner {user_id} force left chat")
+                    
+                except Exception as e:
+                    self.logger.error(f"Error notifying partner {partner_id}: {e}")
+        
+        # Clear manual states
+        self.user_states.pop(user_id, None)
+        if 'partner_id' in locals() and partner_id:
+            self.user_states.pop(partner_id, None)
+        
+        # Send success message
+        await message.answer(
+            "✅ Barcha faolliklar bekor qilindi.",
+            reply_markup=self._get_main_chat_keyboard()
+        )
+        
+        self.logger.info(f"Force stopped all activities for user {user_id}")
     
     async def start(self):
         """Start the user bot."""
