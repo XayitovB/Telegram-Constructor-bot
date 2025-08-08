@@ -13,16 +13,6 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-try:
-    from core.config import settings
-    from core.logging import setup_logging, get_logger
-    from bot import main as bot_main
-except ImportError as e:
-    print(f"❌ Import Error: {e}")
-    print("Make sure all required packages are installed:")
-    print("pip install -r requirements.txt")
-    sys.exit(1)
-
 
 class BotRunner:
     """Professional bot runner with monitoring and error handling."""
@@ -33,6 +23,7 @@ class BotRunner:
     
     def print_startup_banner(self):
         """Print professional startup banner."""
+        from core.config import settings  # Deferred import to ensure .env is loaded
         banner = f"""
 ╔══════════════════════════════════════════════════════════╗
 ║                    {settings.bot.name:<35} ║
@@ -65,6 +56,7 @@ class BotRunner:
     
     def validate_configuration(self) -> bool:
         """Validate bot configuration."""
+        from core.config import settings  # Deferred import to ensure .env is loaded
         print("🔍 Validating configuration...")
         
         # Check required settings
@@ -95,11 +87,11 @@ class BotRunner:
             print(f"❌ Write permission error: {e}")
             return False
         
-        # Validate network requirements
+        # Validate required packages
         try:
-            import aiosqlite
-            import aiogram
-            import loguru
+            import aiosqlite  # noqa: F401
+            import aiogram    # noqa: F401
+            import loguru     # noqa: F401
             print("✅ Required packages: OK")
         except ImportError as e:
             print(f"❌ Missing package: {e}")
@@ -114,6 +106,7 @@ class BotRunner:
         print("📝 Setting up logging system...")
         
         try:
+            from core.logging import setup_logging, get_logger
             setup_logging()
             self.logger = get_logger("BotRunner")
             print("✅ Logging system initialized")
@@ -123,15 +116,15 @@ class BotRunner:
     
     def print_startup_complete(self):
         """Print startup completion message."""
+        from core.config import settings  # Deferred import to ensure .env is loaded
         success_message = f"""
 🎉 {settings.bot.name} Started Successfully!
 
 📱 Bot is now running and ready to accept messages
-🔗 Bot URL: https://t.me/{settings.bot_token.split(':')[0]}
 
 💡 Quick Start Guide:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👤 For Users:     Send /start to your bot
+👤 For Users:     Send /start to your bot in Telegram
 👑 For Admins:    Send /admin to access admin panel
 🛑 To Stop:       Press Ctrl+C
 
@@ -149,6 +142,7 @@ class BotRunner:
             self.logger.info("Starting bot main function...")
         
         try:
+            from bot import main as bot_main  # Deferred import after validation/logging
             await bot_main()
         except KeyboardInterrupt:
             if self.logger:
@@ -184,8 +178,9 @@ class BotRunner:
         except KeyboardInterrupt:
             print("\n👋 Goodbye!")
         except Exception as e:
+            from core.config import settings  # ensure availability for debug flag
             print(f"\n💥 Startup failed: {e}")
-            if settings.debug:
+            if getattr(settings, 'debug', False):
                 import traceback
                 traceback.print_exc()
             sys.exit(1)

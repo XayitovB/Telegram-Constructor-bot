@@ -30,6 +30,12 @@ from ui.formatters import (
 # Get logger (setup will be done by run.py)
 logger = get_logger(__name__)
 
+# Localized button labels for matching user clicks
+MY_BOTS_LABELS = {get_text("btn_my_bots", code) for code in SUPPORTED_LANGUAGES.keys()}
+ADD_BOTS_LABELS = {get_text("btn_add_bots", code) for code in SUPPORTED_LANGUAGES.keys()}
+CHANGE_LANG_LABELS = {get_text("btn_change_language", code) for code in SUPPORTED_LANGUAGES.keys()}
+BACK_MAIN_LABELS = {get_text("btn_back_main", code) for code in SUPPORTED_LANGUAGES.keys()}
+
 # Initialize bot and dispatcher
 bot = Bot(token=settings.bot_token, parse_mode="Markdown")
 storage = MemoryStorage()
@@ -159,7 +165,7 @@ class BotService:
         
         await message.answer(
             text,
-            reply_markup=get_user_keyboard(user.is_admin)
+            reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
         )
 
 
@@ -191,6 +197,16 @@ async def start_handler(message: Message):
     logger.info(f"Existing user {message.from_user.id} started the bot")
 
 
+@dp.message(Command('language'))
+async def language_command_handler(message: Message):
+    """Handle /language command to change language via command."""
+    user = await BotService.update_user(message)
+    await message.answer(
+        get_text("select_language", user.language or DEFAULT_LANGUAGE),
+        reply_markup=LanguageKeyboards.get_language_selection()
+    )
+
+
 @dp.message(Command('admin'))
 async def admin_command_handler(message: Message):
     """Handle /admin command - only entry point to admin panel."""
@@ -199,7 +215,7 @@ async def admin_command_handler(message: Message):
     if not user.is_admin:
         await message.answer(
             "❌ **Access Denied**\n\nThis command requires administrator privileges.",
-            reply_markup=get_user_keyboard(user.is_admin)
+            reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
         )
         return
     
@@ -215,7 +231,7 @@ async def admin_command_handler(message: Message):
 
 # === BUTTON HANDLERS - USER INTERFACE ===
 
-@dp.message(F.text == "🤖 My Bots")
+@dp.message(F.text.in_(MY_BOTS_LABELS))
 async def my_bots_handler(message: Message):
     """Handle My Bots button."""
     user = await BotService.update_user(message)
@@ -225,10 +241,10 @@ async def my_bots_handler(message: Message):
     
     await message.answer(
         f"{title}\n\n{text}",
-        reply_markup=get_user_keyboard(user.is_admin)
+        reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
     )
 
-@dp.message(F.text == "➕ Add Bots")
+@dp.message(F.text.in_(ADD_BOTS_LABELS))
 async def add_bots_handler(message: Message):
     """Handle Add Bots button."""
     user = await BotService.update_user(message)
@@ -238,7 +254,17 @@ async def add_bots_handler(message: Message):
     
     await message.answer(
         f"{title}\n\n{text}",
-        reply_markup=get_user_keyboard(user.is_admin)
+        reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
+    )
+
+
+@dp.message(F.text.in_(CHANGE_LANG_LABELS))
+async def change_language_handler(message: Message):
+    """Handle Change Language button."""
+    user = await BotService.update_user(message)
+    await message.answer(
+        get_text("select_language", user.language or DEFAULT_LANGUAGE),
+        reply_markup=LanguageKeyboards.get_language_selection()
     )
 
 # === ADMIN BUTTON HANDLERS ===
@@ -463,7 +489,7 @@ async def view_admins_handler(message: Message):
     
     await message.answer(
         "\n".join(text_lines),
-        reply_markup=MainKeyboards.get_back_button()
+        reply_markup=MainKeyboards.get_back_button(user.language or DEFAULT_LANGUAGE)
     )
     
     await db.log_admin_action(user.user_id, "view_admins", details=f"Viewed {len(admins)} administrators")
@@ -499,7 +525,7 @@ async def broadcast_message_received(message: Message, state: FSMContext):
         user = await BotService.update_user(message)
         await message.answer(
             "❌ **Broadcast Cancelled**",
-            reply_markup=get_user_keyboard(user.is_admin)
+            reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
         )
         await state.clear()
         return
@@ -532,7 +558,7 @@ async def broadcast_message_received(message: Message, state: FSMContext):
 
 # === NAVIGATION HANDLERS ===
 
-@dp.message(F.text == "🔙 Back to Main Menu")
+@dp.message(F.text.in_(BACK_MAIN_LABELS))
 async def back_to_main_handler(message: Message):
     """Handle back to main menu button."""
     user = await BotService.update_user(message)
@@ -607,23 +633,25 @@ async def broadcast_confirm_callback(callback: CallbackQuery, state: FSMContext)
         "📤 **Sending Broadcast**\n\nPlease wait while the message is being sent to all users..."
     )
     
-    # Send broadcast
+    # Send broadcast with bounded concurrency to improve throughput safely
     sent_count = 0
     failed_count = 0
-    
-    for recipient_id in recipient_ids:
-        try:
-            await bot.send_message(
-                recipient_id,
-                message_text
-            )
-            sent_count += 1
-        except Exception as e:
-            logger.error(f"Failed to send broadcast to {recipient_id}: {e}")
-            failed_count += 1
-        
-        # Rate limiting
-        await asyncio.sleep(settings.bot.broadcast_delay)
+    semaphore = asyncio.Semaphore(10)  # limit concurrent sends
+
+    async def send_to_user(recipient_id: int):
+        nonlocal sent_count, failed_count
+        async with semaphore:
+            try:
+                await bot.send_message(recipient_id, message_text)
+                sent_count += 1
+            except Exception as e:
+                logger.error(f"Failed to send broadcast to {recipient_id}: {e}")
+                failed_count += 1
+            finally:
+                # gentle pacing to avoid hitting hard limits
+                await asyncio.sleep(settings.bot.broadcast_delay)
+
+    await asyncio.gather(*(send_to_user(rid) for rid in recipient_ids))
     
     # Log broadcast
     await db.log_broadcast(user_id, message_text, sent_count, failed_count)
@@ -691,7 +719,7 @@ async def language_selection_callback(callback: CallbackQuery):
             await bot.send_message(
                 callback.message.chat.id,
                 welcome_text,
-                reply_markup=get_user_keyboard(updated_user.is_admin),
+                reply_markup=get_user_keyboard(updated_user.is_admin, updated_user.language or DEFAULT_LANGUAGE),
                 parse_mode="Markdown"
             )
         else:
@@ -700,7 +728,7 @@ async def language_selection_callback(callback: CallbackQuery):
             await bot.send_message(
                 callback.message.chat.id,
                 get_text("welcome_message", selected_language, name=callback.from_user.first_name or "User", admin_hint=""),
-                reply_markup=get_user_keyboard(user_id in settings.get_admin_ids()),
+                reply_markup=get_user_keyboard(user_id in settings.get_admin_ids(), selected_language),
                 parse_mode="Markdown"
             )
         
@@ -739,6 +767,29 @@ async def broadcast_cancel_callback(callback: CallbackQuery, state: FSMContext):
     
     await callback.message.edit_text("❌ **Broadcast Cancelled**")
     await state.clear()
+
+
+@dp.callback_query(F.data == "broadcast_preview")
+async def broadcast_preview_callback(callback: CallbackQuery):
+    """Show a preview of the broadcast message before sending."""
+    user_id = callback.from_user.id
+    if user_id not in broadcast_data:
+        await callback.answer("❌ Nothing to preview", show_alert=True)
+        return
+    data = broadcast_data[user_id]
+    preview_text = MessageFormatter.format_broadcast_preview(data['message'], data.get('recipients', 0))
+    try:
+        await callback.message.edit_text(
+            preview_text,
+            reply_markup=AdminKeyboards.get_broadcast_confirmation(data.get('recipients', 0))
+        )
+    except Exception as e:
+        logger.debug(f"Could not edit preview message: {e}")
+        await callback.message.answer(
+            preview_text,
+            reply_markup=AdminKeyboards.get_broadcast_confirmation(data.get('recipients', 0))
+        )
+    await callback.answer("👁️ Preview shown")
 
 
 # === ADDITIONAL CALLBACK HANDLERS ===
@@ -970,6 +1021,34 @@ Average per User: {stats.messages_total / max(stats.total_users, 1):.1f}
     await db.log_admin_action(user_id, "export_stats", details="Exported statistics report")
 
 
+@dp.callback_query(F.data == "stats_broadcasts")
+async def stats_broadcasts_callback(callback: CallbackQuery):
+    """Handle broadcasts stats callback (placeholder)."""
+    user_id = callback.from_user.id
+    if not await BotService.check_admin(user_id):
+        await callback.answer("❌ Access denied", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "📢 Broadcast History\n\nThis feature will show broadcast history and metrics in a future update.",
+        reply_markup=AdminKeyboards.get_statistics_menu()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "stats_activity")
+async def stats_activity_callback(callback: CallbackQuery):
+    """Handle activity report callback (placeholder)."""
+    user_id = callback.from_user.id
+    if not await BotService.check_admin(user_id):
+        await callback.answer("❌ Access denied", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "📱 Activity Report\n\nThis feature will provide timeline-based activity analytics in a future update.",
+        reply_markup=AdminKeyboards.get_statistics_menu()
+    )
+    await callback.answer()
+
+
 @dp.callback_query(F.data == "stats_refresh")
 async def stats_refresh_callback(callback: CallbackQuery):
     """Handle stats refresh callback."""
@@ -1089,7 +1168,7 @@ async def unknown_message_handler(message: Message):
     
     await message.answer(
         response_text,
-        reply_markup=get_user_keyboard(user.is_admin)
+        reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
     )
 
 

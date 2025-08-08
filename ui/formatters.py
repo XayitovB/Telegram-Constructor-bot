@@ -225,6 +225,14 @@ We're here to help! 🤝
         """Format broadcast result."""
         success_rate = (sent / max(total, 1)) * 100
         
+        # Choose a human-readable evaluation line based on success rate
+        evaluation = (
+            "🎉 Excellent delivery rate!" if success_rate >= 95 else
+            "✅ Good delivery rate." if success_rate >= 90 else
+            "⚠️ Some delivery issues detected." if success_rate >= 80 else
+            "❗ Consider checking your message content."
+        )
+        
         return f"""
 ✅ **Broadcast Completed**
 
@@ -234,12 +242,7 @@ We're here to help! 🤝
 • 📊 Success rate: **{success_rate:.1f}%**
 • ⏱️ Completed: {datetime.now().strftime('%H:%M:%S')}
 
-{
-"🎉 Excellent delivery rate!" if success_rate >= 95 else
-"✅ Good delivery rate." if success_rate >= 90 else
-"⚠️ Some delivery issues detected." if success_rate >= 80 else
-"❗ Consider checking your message content."
-}
+{evaluation}
         """.strip()
     
     @staticmethod
