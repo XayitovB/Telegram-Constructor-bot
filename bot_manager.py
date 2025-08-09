@@ -279,6 +279,47 @@ class BotManager:
             logger.error(f"Error restarting bot {bot_id}: {e}")
             return False
     
+    async def start_all_approved_bots(self):
+        """Start all approved bots on system startup."""
+        try:
+            # Get all approved bots
+            async with db.get_connection() as conn:
+                cursor = await conn.execute("""
+                    SELECT * FROM user_bots 
+                    WHERE status = 'approved' 
+                    ORDER BY created_at ASC
+                """)
+                approved_bots = await cursor.fetchall()
+            
+            if not approved_bots:
+                logger.info("No approved bots found to start")
+                return
+            
+            started_count = 0
+            failed_count = 0
+            
+            for bot_row in approved_bots:
+                bot_data = dict(bot_row)
+                bot_id = bot_data['id']
+                
+                try:
+                    # Skip if already running
+                    if bot_id in running_bots:
+                        continue
+                    
+                    await self._start_user_bot(bot_data)
+                    started_count += 1
+                    logger.info(f"Started bot {bot_id} ({bot_data['bot_name']})")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to start bot {bot_id}: {e}")
+                    failed_count += 1
+            
+            logger.info(f"Bot startup complete: {started_count} started, {failed_count} failed")
+            
+        except Exception as e:
+            logger.error(f"Error starting approved bots: {e}")
+    
     async def get_user_bots(self, user_id: int) -> List[Dict[str, Any]]:
         """Get all bots for a user."""
         try:
@@ -289,6 +330,7 @@ class BotManager:
                 bot['is_running'] = bot['id'] in running_bots
             
             return bots
+            
         except Exception as e:
             logger.error(f"Error getting user bots: {e}")
             return []
@@ -328,31 +370,6 @@ class BotManager:
         except Exception as e:
             logger.error(f"Error getting bot stats: {e}")
             return {}
-    
-    async def start_all_approved_bots(self):
-        """Start all approved bots on system startup."""
-        try:
-            async with db.get_connection() as conn:
-                cursor = await conn.execute("""
-                    SELECT * FROM user_bots WHERE status = 'approved'
-                """)
-                approved_bots = await cursor.fetchall()
-            
-            logger.info(f"Starting {len(approved_bots)} approved user bots...")
-            
-            started_count = 0
-            for bot_row in approved_bots:
-                try:
-                    bot_data = dict(bot_row)
-                    await self._start_user_bot(bot_data)
-                    started_count += 1
-                except Exception as e:
-                    logger.error(f"Failed to start bot {bot_data['id']}: {e}")
-            
-            logger.info(f"Successfully started {started_count}/{len(approved_bots)} user bots")
-            
-        except Exception as e:
-            logger.error(f"Error starting approved bots: {e}")
     
     async def cleanup_stopped_bots(self):
         """Clean up any stopped bots and update their status."""

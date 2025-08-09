@@ -47,9 +47,11 @@ Each user-created bot includes:
 - **🎛️ Complete Platform Control** - Manage all users and their bots
 - **📈 Global Statistics** - Platform-wide analytics and reports
 - **👥 User Administration** - Ban, unban, and manage platform users
-- **📢 Broadcasting System** - Send announcements to platform users
+- **📢 Simplified Broadcasting** - Direct message-to-broadcast flow with real-time results
 - **📁 Data Export** - Export user data and platform statistics
 - **🔍 Bot Monitoring** - Track and manage all created user bots
+- **⚡ Bot Manager** - Advanced bot validation, creation, and lifecycle management
+- **🛡️ Setup Validation** - Automated environment and configuration validation
 
 ## 🚀 Quick Start
 
@@ -57,6 +59,21 @@ Each user-created bot includes:
 - Python 3.8 or higher
 - Telegram Bot Token from [@BotFather](https://t.me/BotFather)
 - Your Telegram User ID from [@userinfobot](https://t.me/userinfobot)
+
+### Automated Setup Validation
+
+Before starting, run the setup validation script to ensure everything is configured correctly:
+
+```bash
+python validate_setup.py
+```
+
+This will check:
+- ✅ Python version compatibility
+- 📦 Required dependencies
+- 🔧 Environment configuration
+- 📁 Project structure integrity
+- ⚙️ Configuration loading
 
 ### Installation
 
@@ -150,9 +167,22 @@ Once created, your bot will have:
 6. **Data Export** - Export user data and platform statistics
 
 ### 🔧 Available Commands
+
+#### Constructor Bot Commands
 - `/start` - Start the constructor bot and access main menu
 - `/admin` - Access platform admin panel (admins only)
-- Any other command on user-created bots depends on their configuration
+- `/cancel` - Cancel any ongoing operation
+
+#### Admin Commands
+- **📢 Send Broadcast** - Direct message-to-all-users broadcasting
+- **📊 Platform Statistics** - View global platform analytics
+- **👥 User Management** - Ban, unban, and manage users
+- **📁 Data Export** - Export user and bot data
+- **🔍 Bot Management** - Monitor and control user-created bots
+
+#### User-Created Bot Commands
+- Commands depend on the bot template configuration
+- Standard template includes profile, statistics, settings, help, and support
 
 ## 🏗️ Architecture
 
@@ -170,13 +200,18 @@ Telegram-Constructor-bot/
 │   ├── keyboards.py        # Telegram keyboards and buttons
 │   └── formatters.py       # Message formatting and utilities
 ├── logs/                   # Auto-generated log files
+├── user_bots/              # User-created bot instances storage
 ├── bot.py                  # Main constructor bot application
+├── bot_manager.py          # Advanced bot validation and management
 ├── user_bot_template.py    # Template for user-created bots
 ├── run.py                  # Professional startup script
+├── validate_setup.py       # Environment and setup validation
 ├── requirements.txt        # Python dependencies
 ├── .env.example           # Configuration template
 ├── .gitignore            # Git ignore rules
-└── start.bat             # Windows startup script
+├── start.bat             # Windows startup script
+├── README.md             # This file
+└── BROADCAST_DEMO.md     # Broadcast functionality documentation
 ```
 
 ### Key Components
@@ -193,8 +228,10 @@ Telegram-Constructor-bot/
 
 #### Bot Logic
 - **bot.py** - Main constructor bot with user bot creation handlers and FSM states
+- **bot_manager.py** - Advanced bot validation, creation, and lifecycle management with Telegram API integration
 - **user_bot_template.py** - Dynamic template for user-created bots with multi-language support
 - **run.py** - Professional startup with validation and monitoring
+- **validate_setup.py** - Comprehensive environment and configuration validation script
 
 ## 🌐 Multi-Language Support
 
@@ -227,9 +264,14 @@ The bot uses SQLite with the following main tables:
 ### Requirements
 - Python 3.8+
 - aiogram 3.2.0+
-- aiosqlite
+- aiosqlite 0.19.0+
 - pydantic 2.5.0+
-- loguru
+- pydantic-settings 2.1.0+
+- loguru 0.7.2+
+- aiohttp 3.9.1+
+- python-dotenv 1.0.0+
+- python-dateutil 2.8.2+
+- typing-extensions 4.8.0+
 
 ### Development Setup
 
@@ -248,7 +290,12 @@ The bot uses SQLite with the following main tables:
    # Set DEBUG=true and LOG_LEVEL=DEBUG in .env
    ```
 
-3. **Run in development mode:**
+3. **Validate setup:**
+   ```bash
+   python validate_setup.py
+   ```
+
+4. **Run in development mode:**
    ```bash
    python run.py
    ```
@@ -286,23 +333,47 @@ The bot uses SQLite with the following main tables:
 
 ## 💬 Support & Troubleshooting
 
+### Automated Troubleshooting
+
+First, run the setup validation script to identify issues:
+
+```bash
+python validate_setup.py
+```
+
+This will automatically check and report:
+- Python version compatibility
+- Missing dependencies
+- Configuration issues
+- Project structure problems
+- Environment variable validation
+
 ### Common Issues
 
 1. **"Invalid bot token" error:**
    - Verify your bot token from @BotFather
    - Check for extra spaces or characters in .env file
+   - Run `python validate_setup.py` to check configuration
 
 2. **"No admin users configured" warning:**
    - Ensure ADMIN_USER_IDS contains your actual Telegram user ID
    - Get your ID from @userinfobot
+   - Format: `ADMIN_USER_IDS=[123456789]` (as a JSON array)
 
 3. **Import errors:**
    - Install all requirements: `pip install -r requirements.txt`
    - Use Python 3.8 or higher
+   - Run validation script to check all dependencies
 
 4. **Database issues:**
    - Check file permissions in the project directory
    - Ensure SQLite is available on your system
+   - Database files will be created automatically
+
+5. **Bot creation failures:**
+   - Verify bot tokens are valid and active
+   - Check Telegram API connectivity
+   - Review logs in the `logs/` directory
 
 ## 🤝 Contributing
 
@@ -321,3 +392,18 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 **Built with ❤️ using Python and aiogram**
 
 *This bot is designed for professional use and can handle production workloads. It's been thoroughly tested and optimized for reliability and performance.*
+
+## 📚 Additional Documentation
+
+- **[BROADCAST_DEMO.md](BROADCAST_DEMO.md)** - Detailed guide to the improved broadcast functionality
+- **[validate_setup.py](validate_setup.py)** - Automated setup validation and troubleshooting
+
+## 🆕 Recent Updates
+
+- ✅ Added automated setup validation script
+- 🚀 Improved bot management with dedicated BotManager class
+- 📢 Simplified broadcast functionality with direct messaging
+- 🛡️ Enhanced error handling and validation
+- 📊 Better statistics and monitoring
+- 🔧 More robust configuration management
+- 📁 Organized project structure with proper documentation

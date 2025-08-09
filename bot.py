@@ -456,7 +456,7 @@ async def detailed_analytics_handler(message: Message):
 
 
 @dp.message(F.text == "📢 Send Broadcast")
-async def send_broadcast_handler(message: Message):
+async def send_broadcast_handler(message: Message, state: FSMContext):
     """Handle send broadcast button."""
     user = await BotService.update_user(message)
     
@@ -464,9 +464,18 @@ async def send_broadcast_handler(message: Message):
         await message.answer("❌ Access denied.")
         return
     
+    # Set state to wait for broadcast message
+    await state.set_state(BroadcastStates.waiting_for_message)
+    
     await message.answer(
-        "📢 **Broadcast Management**\n\nChoose your broadcast option:",
-        reply_markup=BroadcastKeyboards.get_broadcast_menu()
+        "📢 **Send Broadcast Message**\n\n"
+        "Please type the message you want to send to all users:\n\n"
+        "💡 **Tips:**\n"
+        "• Keep messages clear and concise\n"
+        "• Use markdown formatting if needed\n"
+        "• Maximum length: 4000 characters\n\n"
+        "❌ Send /cancel to cancel this operation",
+        reply_markup=MainKeyboards.get_cancel_button()
     )
 
 
@@ -641,42 +650,122 @@ async def compose_message_handler(message: Message, state: FSMContext):
     await state.set_state(BroadcastStates.waiting_for_message)
 
 
+@dp.message(Command('cancel'))
+async def cancel_command(message: Message, state: FSMContext):
+    """Handle /cancel command to cancel current operation."""
+    user = await BotService.update_user(message)
+    await state.clear()
+    
+    # Clear any stored data
+    if message.from_user.id in broadcast_data:
+        del broadcast_data[message.from_user.id]
+    if message.from_user.id in user_sessions:
+        del user_sessions[message.from_user.id]
+    
+    await message.answer(
+        "❌ **Operation Cancelled**\n\nAll current operations have been cancelled.",
+        reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
+    )
+
+
 @dp.message(BroadcastStates.waiting_for_message)
 async def broadcast_message_received(message: Message, state: FSMContext):
-    """Handle received broadcast message."""
-    if message.text == "❌ Cancel Operation":
+    """Handle received broadcast message and send immediately."""
+    # Check for cancel
+    if message.text and (message.text == "❌ Cancel Operation" or message.text.lower() in ['/cancel', 'cancel']):
         user = await BotService.update_user(message)
         await message.answer(
             "❌ **Broadcast Cancelled**",
             reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
         )
         await state.clear()
+        if message.from_user.id in broadcast_data:
+            del broadcast_data[message.from_user.id]
         return
     
+    # Validate message
     if not message.text or len(message.text) > settings.bot.max_message_length:
         await message.answer(
-            f"❌ **Invalid Message**\n\nMessage must be text and under {settings.bot.max_message_length} characters."
+            f"❌ **Invalid Message**\n\nMessage must be text and under {settings.bot.max_message_length} characters.\n\n"
+            f"Please try again or send /cancel to cancel."
         )
         return
     
-    # Get recipient count
-    recipients = await db.get_broadcast_users()
+    # Get recipients
+    recipient_ids = await db.get_broadcast_users()
     
-    # Store broadcast data
-    broadcast_data[message.from_user.id] = {
-        'message': message.text,
-        'recipients': len(recipients)
-    }
+    if not recipient_ids:
+        await message.answer(
+            "⚠️ **No Recipients**\n\nThere are no active users to send the broadcast to."
+        )
+        await state.clear()
+        return
     
-    # Show preview
-    preview_text = MessageFormatter.format_broadcast_preview(message.text, len(recipients))
-    
-    await message.answer(
-        preview_text,
-        reply_markup=AdminKeyboards.get_broadcast_confirmation(len(recipients))
+    # Show sending message
+    sending_msg = await message.answer(
+        f"📤 **Sending Broadcast**\n\n"
+        f"Message: {message.text[:100]}{'...' if len(message.text) > 100 else ''}\n\n"
+        f"Recipients: {len(recipient_ids)} users\n"
+        f"Please wait..."
     )
     
-    await state.set_state(BroadcastStates.confirming)
+    # Send broadcast
+    sent_count = 0
+    failed_count = 0
+    semaphore = asyncio.Semaphore(10)  # Limit concurrent sends
+    
+    async def send_to_user(recipient_id: int):
+        nonlocal sent_count, failed_count
+        async with semaphore:
+            try:
+                await bot.send_message(recipient_id, message.text, parse_mode="Markdown")
+                sent_count += 1
+            except Exception as e:
+                logger.error(f"Failed to send broadcast to {recipient_id}: {e}")
+                failed_count += 1
+            finally:
+                await asyncio.sleep(settings.bot.broadcast_delay)
+    
+    # Send to all users concurrently
+    await asyncio.gather(*(send_to_user(rid) for rid in recipient_ids), return_exceptions=True)
+    
+    # Log broadcast
+    await db.log_broadcast(message.from_user.id, message.text, sent_count, failed_count)
+    
+    # Show results
+    success_rate = (sent_count / max(len(recipient_ids), 1)) * 100
+    result_emoji = "✅" if success_rate >= 95 else "⚠️" if success_rate >= 80 else "❌"
+    
+    result_text = f"""
+{result_emoji} **Broadcast Complete**
+
+📊 **Results:**
+• ✅ Successfully sent: **{sent_count:,}**
+• ❌ Failed to send: **{failed_count:,}**
+• 📈 Success rate: **{success_rate:.1f}%**
+• 👥 Total recipients: **{len(recipient_ids):,}**
+• ⏱️ Completed at: {datetime.now().strftime('%H:%M:%S')}
+
+💬 **Message:** "{message.text[:200]}{'...' if len(message.text) > 200 else ''}"
+    """
+    
+    await sending_msg.edit_text(result_text)
+    
+    # Back to main menu
+    user = await BotService.update_user(message)
+    await state.clear()
+    
+    await asyncio.sleep(2)
+    await message.answer(
+        "🏠 **Returning to Main Menu**",
+        reply_markup=get_user_keyboard(user.is_admin, user.language or DEFAULT_LANGUAGE)
+    )
+    
+    await db.log_admin_action(
+        message.from_user.id, 
+        "broadcast_completed", 
+        details=f"Broadcast sent: {sent_count} success, {failed_count} failed"
+    )
 
 
 # === NAVIGATION HANDLERS ===
