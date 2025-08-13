@@ -28,6 +28,10 @@ def setup_logging() -> None:
     # Add custom success level for loguru (if not exists)
     try:
         logger.level("SUCCESS", no=25, color="<green><bold>", icon="✓")
+        # Add success method to logger
+        def success(message):
+            logger.opt(depth=1).log("SUCCESS", message)
+        logger.success = success
     except (ValueError, TypeError):
         # Level already exists, ignore
         pass

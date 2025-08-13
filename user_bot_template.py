@@ -1399,6 +1399,7 @@ class UserBotTemplate:
     async def _force_stop_everything(self, message: Message, state: FSMContext):
         """Force stop all user activities - robust cleanup for cancel search."""
         user_id = message.from_user.id
+        partner_id = None  # Initialize partner_id
         
         # Clear FSM state no matter what
         await state.clear()
@@ -1434,7 +1435,7 @@ class UserBotTemplate:
         
         # Clear manual states
         self.user_states.pop(user_id, None)
-        if 'partner_id' in locals() and partner_id:
+        if partner_id:  # Now partner_id is properly initialized
             self.user_states.pop(partner_id, None)
         
         # Send success message
@@ -1463,19 +1464,48 @@ class UserBotTemplate:
             await callback.message.answer(admin_text, reply_markup=keyboard)
     
     async def start(self):
-        """Start the user bot."""
+        """Start the user bot - entry point for bot startup."""
+        await self.start_polling()
+    
+    async def start_polling(self):
+        """Start polling for the user bot."""
         try:
             await self._init_database()
             self.logger.info(f"Starting user bot {self.bot_name} (ID: {self.bot_id})")
+            
+            # Test bot token before starting
+            try:
+                await self.bot.get_me()
+            except Exception as token_error:
+                self.logger.error(f"Bot token validation failed for {self.bot_id}: {token_error}")
+                # Clean up and mark as failed
+                return
+            
             await self.dp.start_polling(self.bot)
         except Exception as e:
             self.logger.error(f"Error starting user bot {self.bot_id}: {e}")
             raise
     
+    async def stop_polling(self):
+        """Stop polling for the user bot."""
+        try:
+            if hasattr(self, 'dp') and self.dp:
+                await self.dp.stop_polling()
+            self.logger.info(f"Stopped polling for user bot {self.bot_name} (ID: {self.bot_id})")
+        except Exception as e:
+            self.logger.error(f"Error stopping polling for user bot {self.bot_id}: {e}")
+    
     async def stop(self):
         """Stop the user bot."""
         try:
-            await self.bot.session.close()
+            # Stop polling first
+            if hasattr(self, 'dp') and self.dp:
+                await self.dp.stop_polling()
+            
+            # Close bot session
+            if hasattr(self, 'bot') and self.bot and self.bot.session:
+                await self.bot.session.close()
+                
             self.logger.info(f"Stopped user bot {self.bot_name} (ID: {self.bot_id})")
         except Exception as e:
             self.logger.error(f"Error stopping user bot {self.bot_id}: {e}")
@@ -1489,13 +1519,28 @@ async def create_user_bot(bot_token: str, bot_id: int, owner_id: int, bot_name: 
     """Create and start a new user bot."""
     user_bot = UserBotTemplate(bot_token, bot_id, owner_id, bot_name)
     
-    # Start bot in background
-    task = asyncio.create_task(user_bot.start())
-    
-    # Store the running bot
-    running_bots[bot_id] = user_bot
-    
-    return user_bot
+    try:
+        # Test token before storing in running_bots
+        test_result = await user_bot.bot.get_me()
+        
+        # Start bot in background
+        task = asyncio.create_task(user_bot.start())
+        
+        # Store the running bot only if token validation passes
+        running_bots[bot_id] = user_bot
+        
+        return user_bot
+        
+    except Exception as e:
+        # Clean up bot session if token validation fails
+        try:
+            await user_bot.bot.session.close()
+        except:
+            pass
+        
+        # Don't store in running_bots if validation failed
+        user_bot.logger.error(f"Failed to validate bot token during creation: {e}")
+        raise
 
 
 async def stop_user_bot(bot_id: int) -> bool:

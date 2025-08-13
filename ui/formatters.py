@@ -13,8 +13,39 @@ from core.config import settings
 from core.languages import get_text, get_language_name, DEFAULT_LANGUAGE
 
 
+def escape_markdown(text: str) -> str:
+    """Escape special characters for Telegram MarkdownV2."""
+    if not isinstance(text, str):
+        return ""
+    
+    # Simple escape for common markdown characters
+    escape_chars = ['*', '_', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in escape_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+
 class MessageFormatter:
     """Professional message formatter with consistent styling."""
+    
+    @staticmethod
+    def format_new_user_notification(user: User) -> str:
+        """Format notification for new user registration."""
+        # Format the user's information
+        display_name = escape_markdown(user.display_name)
+        full_name = escape_markdown(user.full_name)
+        username = f"@{user.username}" if user.username else "No username"
+        username = escape_markdown(username)
+        
+        return f"""🆕 **New User Registered**
+
+👤 **User:** {display_name}
+📝 **Full Name:** {full_name}
+🔤 **Username:** {username}
+🆔 **ID:** `{user.user_id}`
+⏰ **Joined:** {user.join_date.strftime('%Y-%m-%d %H:%M:%S')}
+
+🔍 To view details, use admin panel to search for this user."""
     
     @staticmethod
     def format_user_profile(user: User, show_admin_info: bool = False) -> str:
@@ -245,29 +276,6 @@ We're here to help! 🤝
 {evaluation}
         """.strip()
     
-    @staticmethod
-    def format_new_user_notification(user: 'User') -> str:
-        """Format new user registration notification for admins."""
-        join_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        return f"""
-🆕 **New User Registration Alert**
-
-👤 **User Information:**
-• **ID:** `{user.user_id}`
-• **Name:** {user.full_name}
-• **Username:** {'@' + user.username if user.username else 'None'}
-• **Joined:** {join_time}
-
-📊 **Quick Stats:**
-• Profile complete: {'✅' if user.username and user.first_name else '⚠️'}
-• Admin status: {'👑 Admin' if user.is_admin else '👤 User'}
-
-💡 **Admin Actions:**
-• Use `/admin` to manage users
-• View user details in admin panel
-• Monitor user activity
-        """.strip()
     
     @staticmethod
     def format_bot_list(bots: List[Dict[str, Any]], status_filter: str = "all") -> str:
@@ -541,12 +549,6 @@ def truncate_text(text: str, max_length: int = 100, suffix: str = "...") -> str:
     return text[:max_length - len(suffix)] + suffix
 
 
-def escape_markdown(text: str) -> str:
-    """Escape markdown special characters."""
-    escape_chars = ['*', '_', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-    for char in escape_chars:
-        text = text.replace(char, f'\\{char}')
-    return text
 
 
 def format_number(number: int) -> str:

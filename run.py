@@ -196,10 +196,11 @@ def main():
     # Check if .env exists
     env_file = PROJECT_ROOT / ".env"
     if not env_file.exists():
-        print("❌ .env file not found!")
-        print("Please create .env file based on .env.example")
-        print("Copy .env.example to .env and configure your settings")
-        sys.exit(1)
+        print("⚠️  .env file not found!")
+        print("📝 Please create .env file based on .env.example for production use")
+        print("🔧 Copy .env.example to .env and configure your settings")
+        print("⚡ Continuing with default configuration for development...")
+        print()
     
     # Run bot
     runner = BotRunner()

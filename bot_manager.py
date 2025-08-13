@@ -6,7 +6,7 @@ import asyncio
 import aiohttp
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -14,7 +14,8 @@ from aiogram.exceptions import TelegramAPIError
 from core.config import settings
 from core.database import db
 from core.logging import get_logger
-from user_bot_template import create_user_bot, stop_user_bot, running_bots
+# Import will be handled dynamically to avoid circular imports
+# from user_bot_template import create_user_bot, stop_user_bot, running_bots
 
 logger = get_logger(__name__)
 
@@ -147,11 +148,15 @@ class BotManager:
             # Update bot with additional info
             await self._update_bot_info(bot_id, bot_info)
             
+            # Set initial 10-day expiration
+            expires_at = datetime.now() + timedelta(days=10)
+            await db.set_bot_expiration(bot_id, expires_at)
+            
             # Auto-approve and start the bot
             success = await self.approve_and_start_bot(bot_id, user_id, "Auto-approved")
             
             if success:
-                return True, "✅ Bot muvaffaqiyatli yaratildi va ishga tushirildi!", bot_id
+                return True, "✅ Bot muvaffaqiyatli yaratildi va ishga tushirildi! (10 kun muddatli)", bot_id
             else:
                 return False, "Bot yaratildi, lekin ishga tushirishda xatolik yuz berdi.", bot_id
             
@@ -210,13 +215,55 @@ class BotManager:
     
     async def _start_user_bot(self, bot_data: Dict[str, Any]):
         """Start a user bot instance."""
+        bot_id = bot_data.get('id')
+        if not bot_id:
+            logger.error("Bot data missing 'id' field")
+            return
+        
+        # Check if bot has expired
+        if await db.check_bot_expired(bot_id):
+            logger.info(f"Bot {bot_id} has expired, cannot start")
+            # Update status to expired
+            try:
+                async with db.get_connection() as conn:
+                    await conn.execute("""
+                        UPDATE user_bots 
+                        SET status = 'expired' 
+                        WHERE id = ?
+                    """, (bot_id,))
+                    await conn.commit()
+                    logger.info(f"Updated bot {bot_id} status to 'expired' in database")
+            except Exception as db_error:
+                logger.error(f"Failed to update bot status for {bot_id}: {db_error}")
+            return
+            
         try:
-            bot_id = bot_data['id']
+            # Dynamic import to avoid circular imports
+            try:
+                from user_bot_template import create_user_bot, running_bots
+            except ImportError:
+                logger.warning("user_bot_template not available, creating mock implementation")
+                # Create mock running_bots if not available
+                global running_bots
+                if 'running_bots' not in globals():
+                    running_bots = {}
+                
+                async def create_user_bot(**kwargs):
+                    bot_id = kwargs.get('bot_id')
+                    running_bots[bot_id] = {'status': 'mock_running'}
+                    logger.info(f"Mock bot {bot_id} started")
+                    return True
             
             # Don't start if already running
             if bot_id in running_bots:
                 logger.info(f"Bot {bot_id} is already running")
                 return
+            
+            # Validate required fields
+            required_fields = ['bot_token', 'user_id', 'bot_name']
+            for field in required_fields:
+                if field not in bot_data or not bot_data[field]:
+                    raise ValueError(f"Missing required field: {field}")
             
             # Create and start the user bot
             user_bot = await create_user_bot(
@@ -229,12 +276,38 @@ class BotManager:
             logger.info(f"User bot {bot_id} ({bot_data['bot_name']}) started successfully")
             
         except Exception as e:
-            logger.error(f"Error starting user bot: {e}")
-            raise
+            logger.error(f"Error starting user bot {bot_id}: {e}")
+            # Don't raise - let other bots start even if one fails
+            # Clean up from running_bots if it was added but failed
+            if bot_id in running_bots:
+                try:
+                    del running_bots[bot_id]
+                except:
+                    pass
+            
+            # Update status to failed
+            try:
+                async with db.get_connection() as conn:
+                    await conn.execute("""
+                        UPDATE user_bots 
+                        SET status = 'failed' 
+                        WHERE id = ?
+                    """, (bot_id,))
+                    await conn.commit()
+                    logger.info(f"Updated bot {bot_id} status to 'failed' in database")
+            except Exception as db_error:
+                logger.error(f"Failed to update bot status for {bot_id}: {db_error}")
     
     async def stop_bot(self, bot_id: int) -> bool:
         """Stop a running user bot."""
         try:
+            # Dynamic import to avoid circular imports
+            try:
+                from user_bot_template import stop_user_bot, running_bots
+            except ImportError:
+                logger.error("user_bot_template not available for stopping bot")
+                return False
+            
             success = await stop_user_bot(bot_id)
             if success:
                 # Update status in database
@@ -255,16 +328,21 @@ class BotManager:
     async def restart_bot(self, bot_id: int) -> bool:
         """Restart a user bot."""
         try:
+            # Dynamic import to avoid circular imports
+            try:
+                from user_bot_template import stop_user_bot, running_bots
+            except ImportError:
+                logger.error("user_bot_template not available for restarting bot")
+                return False
+            
             # Stop if running
             if bot_id in running_bots:
                 await stop_user_bot(bot_id)
             
             # Get bot data and restart
             bot_data = await self._get_bot_data(bot_id)
-            if bot_data and bot_data['status'] == 'approved':
-                await self._start_user_bot(bot_data)
-                
-                # Update status
+            if bot_data:
+                # Update status to approved (even if it was stopped)
                 async with db.get_connection() as conn:
                     await conn.execute("""
                         UPDATE user_bots 
@@ -272,6 +350,9 @@ class BotManager:
                         WHERE id = ?
                     """, (bot_id,))
                     await conn.commit()
+                
+                # Start the bot
+                await self._start_user_bot(bot_data)
                 
                 return True
             return False
@@ -326,6 +407,14 @@ class BotManager:
             bots = await db.get_user_bots(user_id)
             
             # Add running status
+            try:
+                from user_bot_template import running_bots
+            except ImportError:
+                # Use global fallback if template not available
+                global running_bots
+                if 'running_bots' not in globals():
+                    running_bots = {}
+            
             for bot in bots:
                 bot['is_running'] = bot['id'] in running_bots
             
@@ -344,6 +433,13 @@ class BotManager:
                 total_bots = (await cursor.fetchone())[0]
                 
                 # Running bots
+                try:
+                    from user_bot_template import running_bots
+                except ImportError:
+                    global running_bots
+                    if 'running_bots' not in globals():
+                        running_bots = {}
+                
                 running_count = len(running_bots)
                 
                 # By status
@@ -395,7 +491,116 @@ class BotManager:
             
         except Exception as e:
             logger.error(f"Error cleaning up stopped bots: {e}")
+    
+    async def handle_expired_bots(self):
+        """Stop and mark expired bots as expired."""
+        try:
+            expired_bots = await db.get_expired_bots()
+            
+            for bot_data in expired_bots:
+                bot_id = bot_data['id']
+                
+                # Stop the bot if it's running
+                if bot_id in running_bots:
+                    await self.stop_bot(bot_id)
+                    logger.info(f"Stopped expired bot {bot_id}")
+                
+                # Update status to expired
+                async with db.get_connection() as conn:
+                    await conn.execute("""
+                        UPDATE user_bots 
+                        SET status = 'expired' 
+                        WHERE id = ?
+                    """, (bot_id,))
+                    await conn.commit()
+                    
+                logger.info(f"Bot {bot_id} ({bot_data['bot_name']}) has expired and been stopped")
+            
+            if expired_bots:
+                logger.info(f"Handled {len(expired_bots)} expired bots")
+                
+        except Exception as e:
+            logger.error(f"Error handling expired bots: {e}")
+    
+    async def extend_bot_time(self, bot_id: int, days: int, admin_id: int) -> Tuple[bool, str]:
+        """Extend bot working time by admin."""
+        try:
+            # Check if bot exists
+            bot_data = await self._get_bot_data(bot_id)
+            if not bot_data:
+                return False, "Bot not found"
+            
+            # Extend the time
+            success = await db.extend_bot_time(bot_id, days, admin_id)
+            
+            if success:
+                # If bot was expired and now has time, try to restart it
+                if bot_data['status'] == 'expired':
+                    # Update status back to approved
+                    async with db.get_connection() as conn:
+                        await conn.execute("""
+                            UPDATE user_bots 
+                            SET status = 'approved' 
+                            WHERE id = ?
+                        """, (bot_id,))
+                        await conn.commit()
+                    
+                    # Try to restart the bot
+                    await self._start_user_bot(bot_data)
+                    logger.info(f"Restarted expired bot {bot_id} after time extension")
+                
+                logger.info(f"Extended bot {bot_id} time by {days} days (by admin {admin_id})")
+                return True, f"Bot time extended by {days} days"
+            else:
+                return False, "Failed to extend bot time"
+                
+        except Exception as e:
+            logger.error(f"Error extending bot time: {e}")
+            return False, "Error occurred while extending bot time"
+    
+    async def get_bot_time_info(self, bot_id: int) -> Optional[Dict[str, Any]]:
+        """Get time information for a bot."""
+        try:
+            time_left = await db.get_bot_time_left(bot_id)
+            
+            if time_left is None:
+                return None
+            
+            days_left = time_left.days
+            hours_left = time_left.seconds // 3600
+            
+            return {
+                'time_left': time_left,
+                'days_left': days_left,
+                'hours_left': hours_left,
+                'is_expired': time_left.total_seconds() <= 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting bot time info: {e}")
+            return None
 
+
+# Global variables for bot management
+running_bots = {}
+
+async def stop_user_bot(bot_id: int) -> bool:
+    """Stop a user bot by ID."""
+    try:
+        # Dynamic import to avoid circular imports
+        try:
+            from user_bot_template import stop_user_bot as template_stop
+            return await template_stop(bot_id)
+        except ImportError:
+            # Fallback implementation
+            if bot_id in running_bots:
+                del running_bots[bot_id]
+                logger.info(f"Mock stopped bot {bot_id}")
+                return True
+            return False
+    except Exception as e:
+        logger.error(f"Error stopping bot {bot_id}: {e}")
+        return False
 
 # Global bot manager instance
 bot_manager = BotManager()
